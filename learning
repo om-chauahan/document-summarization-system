@@ -1,0 +1,82 @@
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+##  Date: 12 December - 2025 (lab01)
+
+
+###  Overview
+On this date,  focused on understanding, designing, and setting up the foundation for a Document Summarization System using Django.  
+The work primarily involved learning Django project structure, frontend–backend integration, text extraction from documents, and core NLP summarization concepts.
+
+
+
+##  Topics Learned
+
+
+
+### 1. Django Project Structure & Full-Stack Flow
+- Understood the difference between a **Django project** and a **Django app**.
+- Learned the purpose of key Django files:
+  - settings.py** – project-level configuration  
+  - urls.py – URL routing  
+  - views.py – backend logic  
+  - templates/ – frontend HTML files
+- Understood how Django templates are used for frontend rendering.
+- Learned how frontend (**HTML + JavaScript**) communicates with backend views in Django.
+- Clarified that:
+  - Frontend code is stored in the `templates/` directory
+  - Backend logic is handled in `views.py`
+
+
+
+### 2. Text Extraction from Documents
+- Learned how text extraction varies based on document type:
+  - Text-based PDFs → extracted using **PyPDF2**
+  - DOCX files → extracted using **python-docx**
+  - Scanned PDFs / images → require OCR
+- Understood the importance of OCR (Optical Character Recognition) for scanned documents.
+- Installed and verified the following extraction tools on macOS:
+  - PyPDF2
+  - python-docx
+  - pytesseract
+  - Tesseract OCR (system-level)
+  - pdf2image
+  - Pillow
+- Learned how to verify OCR functionality using:
+  - `tesseract --version`
+  - `pytesseract.get_tesseract_version()`
+
+
+
+### 3. NLP & Summarization Concepts
+- Understood the difference between:
+  - Text extraction
+  - Text cleaning
+  - Text chunking
+  - Text summarization
+- Learned about **abstractive summarization**.
+- Studied the facebook/bart-large-cnn model:
+  - Its role in summarizing extracted text
+  - Why it is suitable for general-purpose document summarization
+- Learned about token limits in NLP models and why long documents must be split into chunks.
+- Understood the need for **text cleaning** before summarization to remove noise and formatting issues.
+
+
+
+### 4. System Architecture Understanding
+Designed and understood the overall workflow of the system:
+
+User Uploads Document
+        ↓
+Django Frontend (HTML + JavaScript)
+        ↓
+Django Backend (views.py)
+        ↓
+Text Extraction (PDF / DOCX / OCR)
+        ↓
+Text Cleaning & Chunking
+        ↓
+Summarization Model (BART – local)
+        ↓
+Summary Displayed to User
+
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
