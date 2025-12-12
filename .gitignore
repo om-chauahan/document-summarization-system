@@ -1,0 +1,22 @@
+# Python / Django
+__pycache__/
+*.py[cod]
+*.sqlite3
+*.log
+
+# Virtual environment
+venv/
+
+# Media & generated files
+media/
+staticfiles/
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# ML models (large files)
+models/
