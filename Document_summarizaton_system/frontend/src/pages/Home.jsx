@@ -1,14 +1,16 @@
 import React from "react";
+import { Link } from "react-router-dom";
 import "./home.css";
 
 export default function Home() {
   return (
     <div className="page">
-      
       <header className="mainHeader">
         <div className="headerContent">
           <div className="headerLeft">
-            <div className="logo">DSS</div>
+            <Link to="/" className="logo" style={{ textDecoration: "none" }}>
+              DSS
+            </Link>
           </div>
 
           <div className="headerRight">
@@ -25,10 +27,8 @@ export default function Home() {
         </div>
       </header>
 
-      
       <main className="heroSection">
         <div className="heroContent">
-          
           <div className="heroLeft">
             <div className="heroLabel">DOCUMENT SUMMARIZATION SYSTEM</div>
 
@@ -41,17 +41,18 @@ export default function Home() {
             </p>
 
             <div className="heroActions">
-              <button className="btnDemoLarge">        Get started free        </button>
-              
+              <Link
+                to="/"
+                className="btnDemoLarge"
+                style={{ textDecoration: "none", display: "inline-block" }}
+              >
+                Get started free
+              </Link>
             </div>
 
-            <p className="heroSubtext">
-            get started with free
-              tools.
-            </p>
+            <p className="heroSubtext">get started with free tools.</p>
           </div>
 
-          
           <div className="heroRight heroIllustration">
             <div className="heroTypography">
               <h2 className="typoMain">Understand documents at a glance.</h2>
@@ -84,39 +85,34 @@ export default function Home() {
         </div>
       </main>
 
-      
-<footer className="footerSection">
-  <div className="footerContent">
-    <div className="footerTop">
-      <span className="footerBrand">DSS</span>
+      <footer className="footerSection">
+        <div className="footerContent">
+          <div className="footerTop">
+            <span className="footerBrand">DSS</span>
 
-         <div className="footerContent">
-          <p className="footerText">
-            10,000+ users in over 50 countries summarize their documents with
-            DSS
-          </p>
+            <div className="footerContent">
+              <p className="footerText">
+                10,000+ users in over 50 countries summarize their documents
+                with DSS
+              </p>
+            </div>
+            <div className="footerLinks">
+              <a href="#" className="footerLink">
+                Terms & Conditions
+              </a>
+              <a href="#" className="footerLink">
+                Privacy Policy
+              </a>
+            </div>
+          </div>
 
-          
+          <div className="footerBottom">
+            <p className="footerCopy">
+              © {new Date().getFullYear()} DSS. All rights reserved.
+            </p>
+          </div>
         </div>
-      <div className="footerLinks">
-        <a href="#" className="footerLink">
-          Terms & Conditions
-        </a>
-        <a href="#" className="footerLink">
-          Privacy Policy
-        </a>
-      </div>
-    </div>
-
-    <div className="footerBottom">
-      <p className="footerCopy">
-        © {new Date().getFullYear()} DSS. All rights
-        reserved.
-      </p>
-    </div>
-  </div>
-</footer>
-
+      </footer>
     </div>
   );
 }
