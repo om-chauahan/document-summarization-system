@@ -1,31 +1,10 @@
-import React from "react";
 import { Link } from "react-router-dom";
-import "./home.css";
+import { SiteFooter, SiteHeader } from "../components/SiteChrome";
 
 export default function Home() {
   return (
     <div className="page">
-      <header className="mainHeader">
-        <div className="headerContent">
-          <div className="headerLeft">
-            <Link to="/" className="logo" style={{ textDecoration: "none" }}>
-              DSS
-            </Link>
-          </div>
-
-          <div className="headerRight">
-            <a href="#" className="headerLink">
-              Log In
-            </a>
-            <a href="#" className="headerLink">
-              Customer Support
-            </a>
-            <a href="#" className="headerLink">
-              About <span className="dropdownArrow">▼</span>
-            </a>
-          </div>
-        </div>
-      </header>
+      <SiteHeader />
 
       <main className="heroSection">
         <div className="heroContent">
@@ -42,7 +21,7 @@ export default function Home() {
 
             <div className="heroActions">
               <Link
-                to="/"
+                to="/signup"
                 className="btnDemoLarge"
                 style={{ textDecoration: "none", display: "inline-block" }}
               >
@@ -85,34 +64,7 @@ export default function Home() {
         </div>
       </main>
 
-      <footer className="footerSection">
-        <div className="footerContent">
-          <div className="footerTop">
-            <span className="footerBrand">DSS</span>
-
-            <div className="footerContent">
-              <p className="footerText">
-                10,000+ users in over 50 countries summarize their documents
-                with DSS
-              </p>
-            </div>
-            <div className="footerLinks">
-              <a href="#" className="footerLink">
-                Terms & Conditions
-              </a>
-              <a href="#" className="footerLink">
-                Privacy Policy
-              </a>
-            </div>
-          </div>
-
-          <div className="footerBottom">
-            <p className="footerCopy">
-              © {new Date().getFullYear()} DSS. All rights reserved.
-            </p>
-          </div>
-        </div>
-      </footer>
+      <SiteFooter />
     </div>
   );
 }

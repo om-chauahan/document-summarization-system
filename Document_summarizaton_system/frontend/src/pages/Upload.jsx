@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import "./home.css";
+import { SiteFooter, SiteHeader } from "../components/SiteChrome";
 
 export default function Upload() {
   const navigate = useNavigate();
@@ -45,31 +45,7 @@ export default function Upload() {
 
   return (
     <div className="page">
-      {/* Main Header */}
-      <header className="mainHeader">
-        <div className="headerContent">
-          <div className="headerLeft">
-            <div
-              className="logo"
-              onClick={() => navigate("/")}
-              style={{ cursor: "pointer" }}
-            >
-              DSS
-            </div>
-          </div>
-          <div className="headerRight">
-            <a href="#" className="headerLink">
-              Log In
-            </a>
-            <a href="#" className="headerLink">
-              Customer Support
-            </a>
-            <a href="#" className="headerLink">
-              About <span className="dropdownArrow">▼</span>
-            </a>
-          </div>
-        </div>
-      </header>
+      <SiteHeader />
 
       {/* Upload Section */}
       <main className="uploadSection">
@@ -219,32 +195,7 @@ export default function Upload() {
       </main>
 
       {/* Footer Section */}
-      <footer className="footerSection">
-        <div className="footerContent">
-          <div className="footerTop">
-            <span className="footerBrand">DSS</span>
-            <div className="footerContent">
-              <p className="footerText">
-                10,000+ users in over 50 countries summarize their documents
-                with DSS
-              </p>
-            </div>
-            <div className="footerLinks">
-              <a href="#" className="footerLink">
-                Terms & Conditions
-              </a>
-              <a href="#" className="footerLink">
-                Privacy Policy
-              </a>
-            </div>
-          </div>
-          <div className="footerBottom">
-            <p className="footerCopy">
-              © {new Date().getFullYear()} DSS. All rights reserved.
-            </p>
-          </div>
-        </div>
-      </footer>
+      <SiteFooter />
     </div>
   );
 }
