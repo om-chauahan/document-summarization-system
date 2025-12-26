@@ -1,11 +1,96 @@
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
-import PyPDF2
 import io
 import logging
 
+import PyPDF2
+
+try:
+    import pdfplumber
+except Exception:  # pragma: no cover
+    pdfplumber = None
+
+try:
+    from pdf2image import convert_from_bytes
+except Exception:  # pragma: no cover
+    convert_from_bytes = None
+
+try:
+    import pytesseract
+except Exception:  # pragma: no cover
+    pytesseract = None
+
 logger = logging.getLogger(__name__)
+
+
+def _normalize_text(text: str) -> str:
+    """Light normalization to reduce whitespace noise."""
+    return "\n".join(line.rstrip() for line in (text or "").splitlines()).strip()
+
+
+def extract_text_from_pdf_bytes(pdf_bytes: bytes, *, ocr_if_needed: bool = True) -> str:
+    """Extract text from PDFs.
+
+    Strategy:
+    1) Use `pdfplumber` when available (better layout/text extraction than PyPDF2 in many PDFs).
+    2) Fallback to PyPDF2 if pdfplumber isn't installed or fails.
+    3) If still empty and OCR is enabled, render pages to images and OCR with Tesseract.
+
+    Returns normalized text (may be empty if nothing extractable and OCR unavailable).
+    """
+    if not pdf_bytes:
+        return ""
+
+    extracted_parts: list[str] = []
+
+    # 1) pdfplumber first (best quality for many text-based PDFs)
+    if pdfplumber is not None:
+        try:
+            with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+                for page in pdf.pages:
+                    # x_tolerance/y_tolerance can improve spacing in some docs.
+                    txt = page.extract_text(x_tolerance=2, y_tolerance=2) or ""
+                    txt = _normalize_text(txt)
+                    if txt:
+                        extracted_parts.append(txt)
+        except Exception:
+            extracted_parts = []
+
+    text = _normalize_text("\n\n".join(extracted_parts))
+
+    # 2) Fallback to PyPDF2
+    if not text:
+        try:
+            pdf_reader = PyPDF2.PdfReader(io.BytesIO(pdf_bytes))
+            for page in pdf_reader.pages:
+                page_text = page.extract_text() or ""
+                page_text = _normalize_text(page_text)
+                if page_text:
+                    extracted_parts.append(page_text)
+            text = _normalize_text("\n\n".join(extracted_parts))
+        except Exception:
+            text = ""
+
+    # 3) OCR fallback for scanned PDFs
+    if ocr_if_needed and not text:
+        if convert_from_bytes is None or pytesseract is None:
+            return ""
+
+        try:
+            # Use a moderate DPI for accuracy; higher DPI = slower/more memory.
+            images = convert_from_bytes(pdf_bytes, dpi=250)
+            ocr_parts: list[str] = []
+            for img in images:
+                ocr_txt = pytesseract.image_to_string(img) or ""
+                ocr_txt = _normalize_text(ocr_txt)
+                if ocr_txt:
+                    ocr_parts.append(ocr_txt)
+            text = _normalize_text("\n\n".join(ocr_parts))
+        except Exception:
+            text = ""
+
+    return text
 
 
 def add_cors_headers(response):
@@ -21,8 +106,7 @@ def add_cors_headers(response):
 def summarize_document(request):
     """
     API endpoint to handle document upload and extract text from PDF files.
-    Only PDF files are processed using PyPDF2.
-    Other file types are not handled.
+    Only PDF files are supported.
     """
     # Handle CORS preflight request
     if request.method == "OPTIONS":
@@ -83,7 +167,7 @@ def summarize_document(request):
             }, status=400)
             return add_cors_headers(response)
 
-        # Parse PDF
+        # Validate PDF structure early (quick check for totally invalid files)
         try:
             pdf_reader = PyPDF2.PdfReader(io.BytesIO(pdf_file))
             num_pages = len(pdf_reader.pages)
@@ -95,31 +179,22 @@ def summarize_document(request):
             }, status=400)
             return add_cors_headers(response)
 
-        # Extract text from all pages
-        extracted_text = ""
-        for page_num in range(num_pages):
-            try:
-                page = pdf_reader.pages[page_num]
-                page_text = page.extract_text()
-                if page_text:
-                    extracted_text += page_text + "\n"
-            except Exception as e:
-                logger.warning(f"Error extracting text from page {page_num + 1}: {str(e)}")
-                continue
+        # Extract text using a higher-accuracy pipeline
+        extracted_text = extract_text_from_pdf_bytes(pdf_file, ocr_if_needed=True)
 
         # Check if text was extracted
         if not extracted_text.strip():
             logger.warning("No text could be extracted from PDF")
             response = JsonResponse({
-                'error': 'No text could be extracted from the PDF. The PDF might be scanned or image-based.'
+                'error': 'No text could be extracted from the PDF. If it is scanned, enable/install OCR dependencies (pytesseract + pdf2image) and ensure Tesseract is installed.'
             }, status=400)
             return add_cors_headers(response)
 
         logger.info(f"Text extracted successfully. Length: {len(extracted_text)} characters")
 
-        # For now, return the extracted text as summary
-        # TODO: Add summarization logic here later
-        summary = extracted_text[:500] + "..." if len(extracted_text) > 500 else extracted_text
+        # Return full extracted text (no truncation). If you later add summarization,
+        # implement it here and keep `extracted_text` available separately.
+        summary = extracted_text
 
         response = JsonResponse({
             'success': True,
