@@ -6,11 +6,12 @@ export default function Upload() {
   const navigate = useNavigate();
   const [file, setFile] = useState(null);
   const [summary, setSummary] = useState("");
+  const [isSummaryOpen, setIsSummaryOpen] = useState(true);
   const [status, setStatus] = useState("idle"); // idle | loading | done | error
   const [error, setError] = useState("");
 
   const fileHint = useMemo(() => {
-    if (!file) return "PDF or DOCX (scanned PDFs supported via OCR)";
+    if (!file) return "PDF only • Text PDFs + scanned PDFs (OCR)";
     return `${file.name} • ${(file.size / 1024 / 1024).toFixed(2)} MB`;
   }, [file]);
 
@@ -36,6 +37,7 @@ export default function Upload() {
       if (!res.ok) throw new Error(data?.error || "Failed to summarize");
 
       setSummary(data.summary || "");
+      setIsSummaryOpen(true);
       setStatus("done");
     } catch (err) {
       setError(err.message || "Something went wrong");
@@ -54,16 +56,15 @@ export default function Upload() {
             <div className="heroLabel">UPLOAD DOCUMENT</div>
             <h1 className="heroTitle">Upload your document</h1>
             <p className="heroDescription">
-              Upload a PDF or DOCX file to generate an AI-powered summary
-              instantly. Our system supports text PDFs, DOCX files, and scanned
-              documents via OCR.
+              Upload a PDF to generate a clean, readable summary in seconds. We
+              support both text-based PDFs and scanned PDFs via OCR.
             </p>
 
             <form className="uploadForm" onSubmit={handleSummarize}>
               <label className="fileUploadLabel">
                 <input
                   type="file"
-                  accept=".pdf,.docx"
+                  accept=".pdf"
                   onChange={(e) => setFile(e.target.files?.[0] || null)}
                   className="fileInput"
                   disabled={status === "loading"}
@@ -106,6 +107,36 @@ export default function Upload() {
             </form>
 
             {error && <div className="errorMessage">⚠️ {error}</div>}
+
+            {summary && (
+              <section className="summaryPanel" aria-label="Document summary">
+                <div className="summaryPanelHeader">
+                  <h3 className="summaryPanelTitle">Summary</h3>
+                  <div className="summaryPanelActions">
+                    <button
+                      type="button"
+                      className="summaryPanelBtn"
+                      onClick={() => setIsSummaryOpen((v) => !v)}
+                    >
+                      {isSummaryOpen ? "Hide" : "Show"}
+                    </button>
+                    <button
+                      type="button"
+                      className="summaryPanelBtn summaryPanelBtnDanger"
+                      onClick={() => setSummary("")}
+                    >
+                      Clear
+                    </button>
+                  </div>
+                </div>
+
+                {isSummaryOpen && (
+                  <div className="summaryPanelBody">
+                    <pre className="summaryPanelText">{summary}</pre>
+                  </div>
+                )}
+              </section>
+            )}
           </div>
 
           <div className="uploadRight heroIllustration">
@@ -148,8 +179,10 @@ export default function Upload() {
                 <div className="uploadFeature">
                   <div className="uploadFeatureIcon">📊</div>
                   <div className="uploadFeatureContent">
-                    <div className="uploadFeatureTitle">Multiple Formats</div>
-                    <div className="uploadFeatureDesc">PDF • DOCX • OCR</div>
+                    <div className="uploadFeatureTitle">PDF Ready</div>
+                    <div className="uploadFeatureDesc">
+                      Text PDFs • Scanned PDFs (OCR)
+                    </div>
                   </div>
                 </div>
               </div>
@@ -175,21 +208,6 @@ export default function Upload() {
                 <span className="uploadTag">Easy to Use</span>
               </div>
             </div>
-
-            {summary && (
-              <div className="summaryCard">
-                <div className="summaryCardHeader">
-                  <h3 className="summaryCardTitle">Summary</h3>
-                  <button
-                    className="summaryCardClose"
-                    onClick={() => setSummary("")}
-                  >
-                    ×
-                  </button>
-                </div>
-                <div className="summaryCardContent">{summary}</div>
-              </div>
-            )}
           </div>
         </div>
       </main>

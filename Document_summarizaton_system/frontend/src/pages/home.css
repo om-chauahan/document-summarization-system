@@ -589,62 +589,140 @@ body {
   min-height: 500px;
 }
 
-.summaryCard {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
+/* Summary Panel (Upload page) - in-flow (no overlay) */
+.summaryPanel {
+  position: relative;
   background: var(--bg-white);
+  border: 1px solid rgba(255, 122, 89, 0.18);
   border-radius: 16px;
-  padding: 32px;
-  box-shadow: var(--shadow-lg);
-  max-width: 500px;
-  width: 90%;
-  max-height: 70vh;
-  overflow-y: auto;
-  z-index: 10;
+  box-shadow: var(--shadow-md);
+  padding: 16px;
+  margin-top: 14px;
+  overflow: hidden;
 }
 
-.summaryCardHeader {
+.summaryPanel::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 4px;
+  width: 100%;
+  background: linear-gradient(
+    90deg,
+    var(--primary-orange) 0%,
+    var(--primary-orange-dark) 55%,
+    rgba(255, 122, 89, 0.25) 100%
+  );
+}
+
+.summaryPanelHeader {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 20px;
+  gap: 12px;
+  margin-bottom: 10px;
+  padding-top: 6px;
 }
 
-.summaryCardTitle {
-  font-size: 20px;
-  font-weight: 700;
+.summaryPanelTitle {
+  font-size: 15px;
+  font-weight: 850;
   color: var(--text-dark);
-}
-
-.summaryCardClose {
-  background: none;
-  border: none;
-  font-size: 28px;
-  color: var(--text-muted);
-  cursor: pointer;
-  line-height: 1;
-  padding: 0;
-  width: 32px;
-  height: 32px;
+  letter-spacing: 0.2px;
   display: flex;
   align-items: center;
-  justify-content: center;
+  gap: 10px;
+}
+
+.summaryPanelTitle::before {
+  content: "";
+  width: 10px;
+  height: 10px;
   border-radius: 50%;
-  transition: all 0.2s;
+  background: rgba(255, 122, 89, 0.18);
+  border: 1px solid rgba(255, 122, 89, 0.35);
 }
 
-.summaryCardClose:hover {
-  background-color: var(--border-color);
-  color: var(--text-dark);
+.summaryPanelActions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
-.summaryCardContent {
-  font-size: 15px;
+.summaryPanelBtn {
+  border: 1px solid rgba(255, 122, 89, 0.22);
+  background: rgba(255, 122, 89, 0.08);
+  color: var(--primary-orange-dark);
+  font-size: 13px;
+  font-weight: 700;
+  padding: 8px 12px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.summaryPanelBtn:hover {
+  border-color: rgba(255, 122, 89, 0.45);
+  background: rgba(255, 122, 89, 0.12);
+  transform: translateY(-1px);
+}
+
+/* Primary action style (used by the first button in header) */
+.summaryPanelActions .summaryPanelBtn:first-child {
+  background: var(--primary-orange);
+  color: white;
+  border-color: var(--primary-orange);
+}
+
+.summaryPanelActions .summaryPanelBtn:first-child:hover {
+  background: var(--primary-orange-dark);
+  border-color: var(--primary-orange-dark);
+}
+
+.summaryPanelBtnDanger {
+  border-color: rgba(239, 68, 68, 0.35);
+  color: rgb(185, 28, 28);
+  background: rgba(239, 68, 68, 0.06);
+}
+
+.summaryPanelBtnDanger:hover {
+  border-color: rgba(239, 68, 68, 0.6);
+  background: rgba(239, 68, 68, 0.06);
+}
+
+.summaryPanelBody {
+  border-top: 1px solid rgba(255, 122, 89, 0.15);
+  padding-top: 12px;
+}
+
+.summaryPanelText {
+  margin: 0;
+  font-size: 14px;
   line-height: 1.7;
   color: var(--text-dark);
   white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 340px;
+  overflow-y: auto;
+  padding-right: 6px; /* room for scrollbar */
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+    "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans",
+    "Apple Color Emoji", "Segoe UI Emoji";
+}
+
+.summaryPanelText::-webkit-scrollbar {
+  width: 10px;
+}
+
+.summaryPanelText::-webkit-scrollbar-thumb {
+  background: rgba(255, 122, 89, 0.35);
+  border-radius: 999px;
+  border: 3px solid rgba(255, 255, 255, 0.85);
+}
+
+.summaryPanelText::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 122, 89, 0.55);
 }
 
 /* Upload Page Typography Styles */
