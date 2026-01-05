@@ -1,4 +1,5 @@
 # 2025-26_Sdp3_Document-summarization-system
+# in ls output where manage.py available from there use git command to push
 
 📌 Project Overview
 The Document Summarization System is a Django-based web application that allows users to upload documents (PDF / DOCX) and automatically generate concise summaries using Natural Language Processing (NLP) techniques.
