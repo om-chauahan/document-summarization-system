@@ -434,6 +434,12 @@ body {
   align-items: start;
 }
 
+/* When summary is present, shift attention to the extracted text */
+.uploadContent.hasSummary {
+  /* Keep the original page layout; just tighten spacing a bit */
+  gap: 44px;
+}
+
 .uploadLeft {
   display: flex;
   flex-direction: column;
@@ -601,6 +607,48 @@ body {
   overflow: hidden;
 }
 
+/* Results section (below the upload grid) */
+.resultsSection {
+  margin-top: 28px;
+  padding: 0 0 10px;
+}
+
+.resultsInner {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 24px;
+}
+
+.summaryPanelLarge {
+  padding: 20px;
+  border-color: rgba(255, 122, 89, 0.24);
+  box-shadow: var(--shadow-lg);
+  outline: 6px solid rgba(255, 122, 89, 0.1);
+}
+
+.summaryPanelLarge .summaryPanelHeader {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.98) 0%,
+    rgba(255, 255, 255, 0.92) 100%
+  );
+  backdrop-filter: blur(10px);
+  padding-bottom: 10px;
+}
+
+.summaryPanelLarge .summaryPanelBody {
+  border-top: 1px solid rgba(255, 122, 89, 0.18);
+}
+
+.summaryPanelLarge .summaryPanelText {
+  max-height: 70vh;
+  font-size: 15px;
+  line-height: 1.85;
+}
+
 .summaryPanel::before {
   content: "";
   position: absolute;
@@ -678,6 +726,56 @@ body {
 .summaryPanelActions .summaryPanelBtn:first-child:hover {
   background: var(--primary-orange-dark);
   border-color: var(--primary-orange-dark);
+}
+
+/* Copy button premium feedback */
+.summaryPanelBtnCopy {
+  position: relative;
+  min-width: 86px; /* prevents layout shift when label changes */
+}
+
+.summaryPanelBtnCopy.isCopied {
+  background: rgba(255, 122, 89, 0.14);
+  border-color: rgba(255, 122, 89, 0.55);
+  box-shadow: 0 0 0 6px rgba(255, 122, 89, 0.1);
+  animation: copyPulse 280ms ease-out;
+}
+
+.summaryPanelBtnCopy.isCopied::after {
+  content: "";
+  display: inline-block;
+  width: 10px;
+  height: 6px;
+  border-left: 2px solid var(--primary-orange-dark);
+  border-bottom: 2px solid var(--primary-orange-dark);
+  transform: rotate(-45deg);
+  margin-left: 8px;
+  position: relative;
+  top: -1px;
+  animation: checkPop 220ms ease-out;
+}
+
+@keyframes copyPulse {
+  from {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-1px);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+
+@keyframes checkPop {
+  from {
+    opacity: 0;
+    transform: rotate(-45deg) scale(0.6);
+  }
+  to {
+    opacity: 1;
+    transform: rotate(-45deg) scale(1);
+  }
 }
 
 .summaryPanelBtnDanger {

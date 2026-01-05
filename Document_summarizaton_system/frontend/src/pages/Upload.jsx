@@ -1,14 +1,20 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { SiteFooter, SiteHeader } from "../components/SiteChrome";
 
 export default function Upload() {
   const navigate = useNavigate();
+  const resultsRef = useRef(null);
+  const copyTimeoutRef = useRef(null);
   const [file, setFile] = useState(null);
   const [summary, setSummary] = useState("");
+  const [extractedText, setExtractedText] = useState("");
   const [isSummaryOpen, setIsSummaryOpen] = useState(true);
+  const [isExtractedOpen, setIsExtractedOpen] = useState(false);
   const [status, setStatus] = useState("idle"); // idle | loading | done | error
   const [error, setError] = useState("");
+  const [copiedSummary, setCopiedSummary] = useState(false);
+  const [copiedExtracted, setCopiedExtracted] = useState(false);
 
   const fileHint = useMemo(() => {
     if (!file) return "PDF only • Text PDFs + scanned PDFs (OCR)";
@@ -22,6 +28,7 @@ export default function Upload() {
     setStatus("loading");
     setError("");
     setSummary("");
+    setExtractedText("");
 
     try {
       const formData = new FormData();
@@ -37,8 +44,21 @@ export default function Upload() {
       if (!res.ok) throw new Error(data?.error || "Failed to summarize");
 
       setSummary(data.summary || "");
+      setExtractedText(data.extracted_text || "");
       setIsSummaryOpen(true);
+      setIsExtractedOpen(false);
       setStatus("done");
+      setCopiedSummary(false);
+      setCopiedExtracted(false);
+
+      // Smooth-scroll to the results section so the user immediately sees the summary.
+      // Use rAF so the DOM updates (section renders) before scrolling.
+      requestAnimationFrame(() => {
+        resultsRef.current?.scrollIntoView({
+          behavior: "smooth",
+          block: "start",
+        });
+      });
     } catch (err) {
       setError(err.message || "Something went wrong");
       setStatus("error");
@@ -107,36 +127,6 @@ export default function Upload() {
             </form>
 
             {error && <div className="errorMessage">⚠️ {error}</div>}
-
-            {summary && (
-              <section className="summaryPanel" aria-label="Document summary">
-                <div className="summaryPanelHeader">
-                  <h3 className="summaryPanelTitle">Summary</h3>
-                  <div className="summaryPanelActions">
-                    <button
-                      type="button"
-                      className="summaryPanelBtn"
-                      onClick={() => setIsSummaryOpen((v) => !v)}
-                    >
-                      {isSummaryOpen ? "Hide" : "Show"}
-                    </button>
-                    <button
-                      type="button"
-                      className="summaryPanelBtn summaryPanelBtnDanger"
-                      onClick={() => setSummary("")}
-                    >
-                      Clear
-                    </button>
-                  </div>
-                </div>
-
-                {isSummaryOpen && (
-                  <div className="summaryPanelBody">
-                    <pre className="summaryPanelText">{summary}</pre>
-                  </div>
-                )}
-              </section>
-            )}
           </div>
 
           <div className="uploadRight heroIllustration">
@@ -210,6 +200,129 @@ export default function Upload() {
             </div>
           </div>
         </div>
+
+        {(summary || extractedText) && (
+          <section
+            ref={resultsRef}
+            className="resultsSection"
+            aria-label="Extracted summary"
+          >
+            <div className="resultsInner">
+              {summary && (
+                <div className="summaryPanel summaryPanelLarge">
+                  <div className="summaryPanelHeader">
+                    <h3 className="summaryPanelTitle">AI Summary (BART)</h3>
+                    <div className="summaryPanelActions">
+                      <button
+                        type="button"
+                        className="summaryPanelBtn"
+                        onClick={() => setIsSummaryOpen((v) => !v)}
+                      >
+                        {isSummaryOpen ? "Hide" : "Show"}
+                      </button>
+                      <button
+                        type="button"
+                        className={`summaryPanelBtn summaryPanelBtnCopy ${
+                          copiedSummary ? "isCopied" : ""
+                        }`}
+                        onClick={async () => {
+                          try {
+                            await navigator.clipboard.writeText(summary);
+                            setCopiedSummary(true);
+                            if (copyTimeoutRef.current) {
+                              clearTimeout(copyTimeoutRef.current);
+                            }
+                            copyTimeoutRef.current = setTimeout(() => {
+                              setCopiedSummary(false);
+                              copyTimeoutRef.current = null;
+                            }, 1400);
+                          } catch {
+                            // ignore
+                          }
+                        }}
+                        aria-label={
+                          copiedSummary ? "Copied" : "Copy summary to clipboard"
+                        }
+                      >
+                        {copiedSummary ? "Copied" : "Copy"}
+                      </button>
+                    </div>
+                  </div>
+
+                  {isSummaryOpen && (
+                    <div className="summaryPanelBody">
+                      <pre className="summaryPanelText">{summary}</pre>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {extractedText && (
+                <div
+                  className="summaryPanel summaryPanelLarge"
+                  style={{ marginTop: 16 }}
+                >
+                  <div className="summaryPanelHeader">
+                    <h3 className="summaryPanelTitle">Extracted Text</h3>
+                    <div className="summaryPanelActions">
+                      <button
+                        type="button"
+                        className="summaryPanelBtn"
+                        onClick={() => setIsExtractedOpen((v) => !v)}
+                      >
+                        {isExtractedOpen ? "Hide" : "Show"}
+                      </button>
+                      <button
+                        type="button"
+                        className={`summaryPanelBtn summaryPanelBtnCopy ${
+                          copiedExtracted ? "isCopied" : ""
+                        }`}
+                        onClick={async () => {
+                          try {
+                            await navigator.clipboard.writeText(extractedText);
+                            setCopiedExtracted(true);
+                            if (copyTimeoutRef.current) {
+                              clearTimeout(copyTimeoutRef.current);
+                            }
+                            copyTimeoutRef.current = setTimeout(() => {
+                              setCopiedExtracted(false);
+                              copyTimeoutRef.current = null;
+                            }, 1400);
+                          } catch {
+                            // ignore
+                          }
+                        }}
+                        aria-label={
+                          copiedExtracted
+                            ? "Copied"
+                            : "Copy extracted text to clipboard"
+                        }
+                      >
+                        {copiedExtracted ? "Copied" : "Copy"}
+                      </button>
+                      <button
+                        type="button"
+                        className="summaryPanelBtn summaryPanelBtnDanger"
+                        onClick={() => {
+                          setSummary("");
+                          setExtractedText("");
+                        }}
+                      >
+                        Clear
+                      </button>
+                    </div>
+                  </div>
+
+                  {isExtractedOpen && (
+                    <div className="summaryPanelBody">
+                      <pre className="summaryPanelText">{extractedText}</pre>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </section>
+        )}
       </main>
 
       {/* Footer Section */}
