@@ -1,4 +1,4 @@
-from django.http import JsonResponse
+from django.http import JsonResponse, StreamingHttpResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 import io
@@ -27,10 +27,12 @@ except Exception:  # pragma: no cover
 logger = logging.getLogger(__name__)
 
 try:
-    from .summarization import summarize_text as model_summarize_text, generate_best_summary
+    # Local LLM summarization via Ollama.
+    from .summarization import summarize_text as model_summarize_text
+    from .summarization import stream_summary as model_stream_summary
 except Exception:  # pragma: no cover
     model_summarize_text = None
-    generate_best_summary = None
+    model_stream_summary = None
 
 
 def _normalize_text(text: str) -> str:
@@ -179,48 +181,6 @@ def normalize_extracted_text(text: str) -> str:
     return out
 
 
-def _extract_key_facts(text: str) -> list[str]:
-    """Extract short factual lines (IDs, numbers, identifiers, emails) that
-    should be preserved in summaries.
-
-    Returns a list of short strings like 'ABC ID: 430050715592'.
-    """
-    if not text:
-        return []
-
-    facts = []
-
-    # Look for explicit 'ABC ID' patterns
-    for m in re.finditer(r"\bABC\s*ID\b[:\s]*([A-Za-z0-9-]+)", text, flags=re.IGNORECASE):
-        v = m.group(1).strip()
-        facts.append(f"ABC ID: {v}")
-
-    # Aadhaar-like numbers (12 digits) and other long numeric IDs
-    for m in re.finditer(r"\b(\d{9,16})\b", text):
-        v = m.group(1)
-        # avoid picking up page numbers or short numbers
-        if len(v) >= 9:
-            facts.append(f"ID: {v}")
-
-    # Emails
-    for m in re.finditer(r"[\w.-]+@[\w.-]+\.[A-Za-z]{2,}", text):
-        facts.append(m.group(0))
-
-    # Short unique tokens like 'Powered by DigiLocker' or 'DigiLocker'
-    if "digilocker" in text.lower():
-        facts.append("DigiLocker reference present")
-
-    # Deduplicate while preserving order
-    seen = set()
-    out = []
-    for f in facts:
-        if f not in seen:
-            seen.add(f)
-            out.append(f)
-
-    return out
-
-
 def add_cors_headers(response):
     """Add CORS headers to response"""
     response["Access-Control-Allow-Origin"] = "*"
@@ -327,57 +287,30 @@ def summarize_document(request):
 
         logger.info(f"Text extracted successfully. Length: {len(extracted_text)} characters")
 
-        # Build an improved summary. Prefer a deterministic structured summary first
-        # (preserves IDs/dates). If that function isn't available, fall back to the
-        # model summarizer (if installed). If neither is available, return 503.
-        summary = ""
-        summarization_used = False
+        # Summarize using local Ollama model.
+        if model_summarize_text is None:
+            logger.warning("Summarization unavailable (missing ollama dependency)")
+            response = JsonResponse({
+                'error': 'Summarization is not available on the server. Please install the ollama python package and ensure Ollama is running (see README).'
+            }, status=503)
+            response = add_cors_headers(response)
+            return response
 
-        if generate_best_summary is not None:
-            try:
-                summary = generate_best_summary(extracted_text)
-                summarization_used = True
-            except Exception:
-                logger.exception("Structured summary generation failed; will try model summarizer as fallback")
-
-        if not summarization_used:
-            # Try model summarizer if present
-            if model_summarize_text is None:
-                logger.warning("Summarization unavailable (missing transformers dependencies)")
-                response = JsonResponse({
-                    'error': 'Summarization is not available on the server. Please install transformers and its dependencies (see README).'
-                }, status=503)
-                response = add_cors_headers(response)
-                return response
-            try:
-                summary = model_summarize_text(extracted_text)
-                summarization_used = True
-            except Exception as e:
-                logger.error("Model summarization failed: %s", str(e), exc_info=True)
-                response = JsonResponse({
-                    'error': f'Summarization failed: {str(e)}'
-                }, status=500)
-                response = add_cors_headers(response)
-                return response
-
-        # Ensure short factual items are visible to the user. The structured summary
-        # should already include IDs, but we keep this guard in case a model summary
-        # was used and omitted small facts.
         try:
-            key_facts = _extract_key_facts(extracted_text)
-            if key_facts:
-                missed = [f for f in key_facts if f not in (summary or "")]
-                if missed:
-                    facts_block = "Key facts:\n" + "\n".join(missed) + "\n\n"
-                    summary = facts_block + (summary or "")
-        except Exception:
-            logger.exception("Failed to extract/preserve key facts for summary")
+            summary = model_summarize_text(extracted_text)
+        except Exception as e:
+            logger.error("Model summarization failed: %s", str(e), exc_info=True)
+            response = JsonResponse({
+                'error': f'Summarization failed: {str(e)}'
+            }, status=500)
+            response = add_cors_headers(response)
+            return response
 
         response = JsonResponse({
             'success': True,
             'extracted_text': extracted_text,
             'summary': summary,
-            'summarization_used': summarization_used,
+            'summarization_used': True,
             'extracted_text_length': len(extracted_text),
             'message': 'PDF text extracted successfully'
         }, status=200)
@@ -389,3 +322,93 @@ def summarize_document(request):
             'error': f'An error occurred while processing the file: {str(e)}'
         }, status=500)
         return add_cors_headers(response)
+
+
+@csrf_exempt
+@require_http_methods(["POST", "OPTIONS"])
+def summarize_document_stream(request):
+    """Streaming API endpoint (SSE) to reduce perceived lag.
+
+    Returns a Server-Sent Events stream:
+    - event: meta  (JSON metadata, once)
+    - event: token (incremental text)
+    - event: done  (signals completion)
+    - event: error (signals error)
+    """
+
+    if request.method == "OPTIONS":
+        response = JsonResponse({})
+        return add_cors_headers(response)
+
+    if 'file' not in request.FILES:
+        response = JsonResponse({'error': 'No file provided'}, status=400)
+        return add_cors_headers(response)
+
+    uploaded_file = request.FILES['file']
+    if not uploaded_file.name or not uploaded_file.name.lower().endswith('.pdf'):
+        response = JsonResponse({'error': 'Only PDF files are supported.'}, status=400)
+        return add_cors_headers(response)
+
+    if model_stream_summary is None:
+        response = JsonResponse(
+            {
+                'error': 'Streaming summarization is not available on the server. Please install ollama and ensure Ollama is running.'
+            },
+            status=503,
+        )
+        return add_cors_headers(response)
+
+    try:
+        pdf_file = uploaded_file.read()
+    except Exception as e:
+        response = JsonResponse({'error': f'Error reading file: {str(e)}'}, status=400)
+        return add_cors_headers(response)
+
+    extracted_text = extract_text_from_pdf_bytes(pdf_file, ocr_if_needed=True)
+    try:
+        extracted_text = normalize_extracted_text(extracted_text)
+    except Exception:
+        logger.exception("Failed to normalize extracted text")
+
+    if not extracted_text.strip():
+        response = JsonResponse(
+            {
+                'error': 'No text could be extracted from the PDF. If it is scanned, enable/install OCR dependencies and ensure Tesseract is installed.'
+            },
+            status=400,
+        )
+        return add_cors_headers(response)
+
+    def sse_pack(event: str, data: str) -> str:
+        # SSE format: event + data lines + blank line
+        # Ensure data has no bare CR.
+        safe = (data or "").replace("\r", "")
+        lines = safe.split("\n")
+        payload = "\n".join(f"data: {ln}" for ln in lines)
+        return f"event: {event}\n{payload}\n\n"
+
+    def event_stream():
+        # Send metadata early so the UI can show extracted length.
+        meta_json = (
+            '{'
+            f'"extracted_text_length": {len(extracted_text)},'
+            '"summarization_used": true'
+            '}'
+        )
+        yield sse_pack("meta", meta_json)
+
+        try:
+            for chunk in model_stream_summary(extracted_text):
+                # Send tokens/chunks as they arrive.
+                yield sse_pack("token", chunk)
+            # Send extracted text at the end so the UI doesn't need a second upload.
+            # Remove carriage returns to keep the SSE framing safe.
+            yield sse_pack("extracted", extracted_text)
+            yield sse_pack("done", "")
+        except Exception as e:
+            yield sse_pack("error", str(e))
+
+    resp = StreamingHttpResponse(event_stream(), content_type="text/event-stream")
+    resp["Cache-Control"] = "no-cache"
+    resp["X-Accel-Buffering"] = "no"  # helps avoid buffering on some proxies
+    return add_cors_headers(resp)

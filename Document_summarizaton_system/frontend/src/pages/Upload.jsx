@@ -1,13 +1,75 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { SiteFooter, SiteHeader } from "../components/SiteChrome";
+
+function renderStructuredSummary(text) {
+  const src = (text || "").trim();
+  if (!src) return null;
+
+  const lines = src.split(/\r?\n/).map((l) => l.trimEnd());
+  const blocks = [];
+  let current = null;
+
+  const pushCurrent = () => {
+    if (!current) return;
+    if (current.title || current.items.length) blocks.push(current);
+    current = null;
+  };
+
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line) continue;
+
+    const bullet = line.match(/^[-•\*]\s+(.*)$/);
+    const numbered = line.match(/^\d+[\.)]\s+(.*)$/);
+
+    if (bullet || numbered) {
+      if (!current) current = { title: "", items: [] };
+      current.items.push((bullet?.[1] || numbered?.[1] || line).trim());
+      continue;
+    }
+
+    // Treat non-bullet lines as headings (the backend prompt asks for headings on their own lines).
+    pushCurrent();
+    current = { title: line.replace(/^\*+|\*+$/g, ""), items: [] };
+  }
+
+  pushCurrent();
+
+  if (!blocks.length) {
+    return <div className="summaryRichPara">{src}</div>;
+  }
+
+  return (
+    <div className="summaryRich">
+      {blocks.map((b, idx) => (
+        <section className="summaryRichSection" key={idx}>
+          {idx > 0 && <div className="summaryRichDivider" aria-hidden="true" />}
+          {b.title && <div className="summaryRichHeading">{b.title}</div>}
+          {b.items.length > 0 && (
+            <ul className="summaryRichList">
+              {b.items.map((it, i) => (
+                <li key={i}>{it}</li>
+              ))}
+            </ul>
+          )}
+        </section>
+      ))}
+    </div>
+  );
+}
 
 export default function Upload() {
   const navigate = useNavigate();
   const resultsRef = useRef(null);
   const copyTimeoutRef = useRef(null);
+  const typingTimerRef = useRef(null);
+  const loadingTimerRef = useRef(null);
+  const typingStartTimeoutRef = useRef(null);
   const [file, setFile] = useState(null);
   const [summary, setSummary] = useState("");
+  const [displaySummary, setDisplaySummary] = useState("");
+  const [loadingText, setLoadingText] = useState("");
   const [extractedText, setExtractedText] = useState("");
   const [isSummaryOpen, setIsSummaryOpen] = useState(true);
   const [isExtractedOpen, setIsExtractedOpen] = useState(false);
@@ -15,6 +77,147 @@ export default function Upload() {
   const [error, setError] = useState("");
   const [copiedSummary, setCopiedSummary] = useState(false);
   const [copiedExtracted, setCopiedExtracted] = useState(false);
+
+  // Clean up any running typing animation timer.
+  useEffect(() => {
+    return () => {
+      if (typingTimerRef.current) {
+        clearInterval(typingTimerRef.current);
+        typingTimerRef.current = null;
+      }
+      if (loadingTimerRef.current) {
+        clearInterval(loadingTimerRef.current);
+        loadingTimerRef.current = null;
+      }
+      if (typingStartTimeoutRef.current) {
+        clearTimeout(typingStartTimeoutRef.current);
+        typingStartTimeoutRef.current = null;
+      }
+    };
+  }, []);
+
+  // Rotating loading sentences (type -> delete -> next) while the backend works.
+  useEffect(() => {
+    if (status !== "loading") {
+      setLoadingText("");
+      if (loadingTimerRef.current) {
+        clearInterval(loadingTimerRef.current);
+        loadingTimerRef.current = null;
+      }
+      return;
+    }
+
+    const sentences = [
+      "Extracting text from your PDF",
+      "Cleaning and normalizing text",
+      "Detecting important names and entities",
+      "Finding key details and numbers",
+      "Extracting dates, IDs, and contact info",
+      "Organizing content into sections",
+      "Writing a clean structured summary",
+      "Ensuring no details are missed",
+      "Double-checking key fields",
+      "Finalizing summary",
+      "Preparing results for display",
+    ];
+
+    let sIdx = 0;
+    let pos = 0;
+    let deleting = false;
+    let pauseTicks = 0;
+
+    const tickMs = 40; // typing speed
+    const pauseAfterType = 18; // pause when a sentence is fully typed
+    const pauseAfterDelete = 6; // pause when fully deleted
+
+    setLoadingText("");
+
+    if (loadingTimerRef.current) {
+      clearInterval(loadingTimerRef.current);
+      loadingTimerRef.current = null;
+    }
+
+    loadingTimerRef.current = setInterval(() => {
+      const sentence = sentences[sIdx] || "Generating summary";
+
+      if (pauseTicks > 0) {
+        pauseTicks -= 1;
+        return;
+      }
+
+      if (!deleting) {
+        pos = Math.min(sentence.length, pos + 1);
+        setLoadingText(sentence.slice(0, pos));
+        if (pos >= sentence.length) {
+          deleting = true;
+          pauseTicks = pauseAfterType;
+        }
+      } else {
+        pos = Math.max(0, pos - 1);
+        setLoadingText(sentence.slice(0, pos));
+        if (pos <= 0) {
+          deleting = false;
+          sIdx = (sIdx + 1) % sentences.length;
+          pauseTicks = pauseAfterDelete;
+        }
+      }
+    }, tickMs);
+
+    return () => {
+      if (loadingTimerRef.current) {
+        clearInterval(loadingTimerRef.current);
+        loadingTimerRef.current = null;
+      }
+    };
+  }, [status]);
+
+  // Typewriter effect after the final summary arrives (non-streaming backend).
+  useEffect(() => {
+    if (status !== "done" || !summary) return;
+
+    if (typingTimerRef.current) {
+      clearInterval(typingTimerRef.current);
+      typingTimerRef.current = null;
+    }
+
+    setDisplaySummary("");
+
+    // Slow, clear ChatGPT-like effect (but still capped so long outputs don't take forever).
+    const minChunk = 2;
+    const maxChunk = 10;
+    const tickMs = 30;
+    const maxTypingMs = 9000; // cap total animation time
+
+    let i = 0;
+    const startedAt = Date.now();
+    typingTimerRef.current = setInterval(() => {
+      const elapsed = Date.now() - startedAt;
+      const remaining = summary.length - i;
+      if (remaining <= 0 || elapsed >= maxTypingMs) {
+        // If we hit the cap, jump to full summary.
+        setDisplaySummary(summary);
+        clearInterval(typingTimerRef.current);
+        typingTimerRef.current = null;
+        return;
+      }
+
+      // Gradually increase chunk size for long summaries to keep it reasonable.
+      const dynamic = Math.floor(remaining / 120);
+      const chunk = Math.min(
+        remaining,
+        Math.max(minChunk, Math.min(maxChunk, dynamic))
+      );
+      i += chunk;
+      setDisplaySummary(summary.slice(0, i));
+    }, tickMs);
+
+    return () => {
+      if (typingTimerRef.current) {
+        clearInterval(typingTimerRef.current);
+        typingTimerRef.current = null;
+      }
+    };
+  }, [status, summary]);
 
   const fileHint = useMemo(() => {
     if (!file) return "PDF only • Text PDFs + scanned PDFs (OCR)";
@@ -28,13 +231,27 @@ export default function Upload() {
     setStatus("loading");
     setError("");
     setSummary("");
+    setDisplaySummary("");
     setExtractedText("");
+
+    if (typingTimerRef.current) {
+      clearInterval(typingTimerRef.current);
+      typingTimerRef.current = null;
+    }
+    if (loadingTimerRef.current) {
+      clearInterval(loadingTimerRef.current);
+      loadingTimerRef.current = null;
+    }
+    if (typingStartTimeoutRef.current) {
+      clearTimeout(typingStartTimeoutRef.current);
+      typingStartTimeoutRef.current = null;
+    }
 
     try {
       const formData = new FormData();
       formData.append("file", file);
 
-      // Django endpoint
+      // Django endpoint (non-streaming)
       const res = await fetch("http://127.0.0.1:8000/api/summarize/", {
         method: "POST",
         body: formData,
@@ -43,7 +260,9 @@ export default function Upload() {
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || "Failed to summarize");
 
-      setSummary(data.summary || "");
+      // Scroll FIRST (after a tiny delay), then set summary so the typing effect starts
+      // when the user is already looking at the results.
+      setDisplaySummary("");
       setExtractedText(data.extracted_text || "");
       setIsSummaryOpen(true);
       setIsExtractedOpen(false);
@@ -51,13 +270,20 @@ export default function Upload() {
       setCopiedSummary(false);
       setCopiedExtracted(false);
 
-      // Smooth-scroll to the results section so the user immediately sees the summary.
-      // Use rAF so the DOM updates (section renders) before scrolling.
       requestAnimationFrame(() => {
-        resultsRef.current?.scrollIntoView({
-          behavior: "smooth",
-          block: "start",
-        });
+        // Small delay before scrolling so the user perceives "summary is ready".
+        setTimeout(() => {
+          resultsRef.current?.scrollIntoView({
+            behavior: "smooth",
+            block: "start",
+          });
+
+          // Start typing shortly after scroll begins.
+          typingStartTimeoutRef.current = setTimeout(() => {
+            setSummary(data.summary || "");
+            typingStartTimeoutRef.current = null;
+          }, 450);
+        }, 250);
       });
     } catch (err) {
       setError(err.message || "Something went wrong");
@@ -118,10 +344,18 @@ export default function Upload() {
 
               {status === "loading" && (
                 <div className="loadingIndicator">
-                  <div className="loadingBar">
-                    <div className="loadingBarFill" />
+                  <div
+                    className="loadingTypewriter"
+                    aria-label="Generating summary"
+                  >
+                    <span className="loadingTypewriterText">
+                      {loadingText || "Generating summary"}
+                    </span>
+                    <span
+                      className="loadingTypewriterCursor"
+                      aria-hidden="true"
+                    />
                   </div>
-                  <p className="loadingText">Analyzing your document...</p>
                 </div>
               )}
             </form>
@@ -211,7 +445,7 @@ export default function Upload() {
               {summary && (
                 <div className="summaryPanel summaryPanelLarge">
                   <div className="summaryPanelHeader">
-                    <h3 className="summaryPanelTitle">AI Summary (BART)</h3>
+                    <h3 className="summaryPanelTitle">AI Summary</h3>
                     <div className="summaryPanelActions">
                       <button
                         type="button"
@@ -251,7 +485,15 @@ export default function Upload() {
 
                   {isSummaryOpen && (
                     <div className="summaryPanelBody">
-                      <pre className="summaryPanelText">{summary}</pre>
+                      {renderStructuredSummary(displaySummary) || (
+                        <pre className="summaryPanelText">{displaySummary}</pre>
+                      )}
+
+                      {/* Blinking cursor while typing */}
+                      {displaySummary &&
+                        displaySummary.length < summary.length && (
+                          <span className="typingCursor" aria-hidden="true" />
+                        )}
                     </div>
                   )}
                 </div>

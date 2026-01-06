@@ -11,7 +11,5 @@ python-docx==1.2.0
 sqlparse==0.5.4
 typing_extensions==4.15.0
 
-# Summarization (Hugging Face)
-transformers==4.48.1
-torch==2.2.2
-sentencepiece==0.1.99
+# Summarization (Local LLM via Ollama)
+ollama==0.4.5
