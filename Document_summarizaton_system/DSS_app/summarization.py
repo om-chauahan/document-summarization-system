@@ -1,397 +1,293 @@
-"""Summarization helpers (Hugging Face / Transformers).
+"""Summarization helpers (Local LLM via Ollama).
 
-We use a map-reduce approach so long PDFs can be summarized despite model input limits.
+All Hugging Face / BART / transformers-based summarization has been removed.
 
-- map step: split input text into chunks and summarize each
-- reduce step: summarize the concatenated chunk summaries
+This uses a local LLM through Ollama. Example setup:
+- Install Ollama: https://ollama.com
+- Pull a model once: `ollama pull mistral`
+- Ensure Ollama is running (default: http://localhost:11434)
 
-The default model is `facebook/bart-large-cnn`.
-
-Notes:
-- Loading the model is expensive; keep the pipeline cached.
-- For production, consider running this asynchronously (Celery) or behind a queue.
+We send extracted text with a prompt that requests clean section headings and
+dash-bullets for key details (no markdown).
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from functools import lru_cache
+import hashlib
+import logging
 import os
 import re
-import logging
-from typing import Iterable
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True)
-class SummaryConfig:
-    model_name: str = os.environ.get("DSS_SUMMARY_MODEL", "facebook/bart-large-cnn")
-    # Chunk sizes are in tokens (we use the tokenizer to split safely).
-    # Keep well under BART's max (typically 1024 tokens) by default.
-    chunk_size: int = int(os.environ.get("DSS_SUMMARY_CHUNK_SIZE", "800"))
-    chunk_overlap: int = int(os.environ.get("DSS_SUMMARY_CHUNK_OVERLAP", "50"))
-    # Generation controls
-    min_length: int = int(os.environ.get("DSS_SUMMARY_MIN_LENGTH", "60"))
-    max_length: int = int(os.environ.get("DSS_SUMMARY_MAX_LENGTH", "180"))
+DEFAULT_OLLAMA_MODEL = os.environ.get("DSS_OLLAMA_MODEL", "mistral")
+DEFAULT_OLLAMA_HOST = os.environ.get("DSS_OLLAMA_HOST", "http://localhost:11434")
 
 
-def _clean_for_summarization(text: str) -> str:
-    text = (text or "").strip()
-    # Collapse huge whitespace runs while preserving newlines somewhat.
-    text = re.sub(r"[\t\r]+", " ", text)
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    text = re.sub(r" {2,}", " ", text)
-    return text.strip()
+# Simple in-process cache to avoid recomputing the same summary repeatedly.
+# Note: in multi-process deployments, each process has its own cache.
+_SUMMARY_CACHE: dict[str, str] = {}
+_SUMMARY_CACHE_ORDER: list[str] = []
+_SUMMARY_CACHE_MAX_ITEMS = int(os.environ.get("DSS_SUMMARY_CACHE_MAX_ITEMS", "24"))
 
 
-def _chunk_text_by_tokens(text: str, tokenizer, *, chunk_tokens: int, overlap_tokens: int) -> list[str]:
-    """Chunk `text` into pieces where each chunk's token count (by tokenizer)
-    is <= chunk_tokens. We accumulate sentences until adding the next would
-    exceed the target. For very long sentences we fall back to character slicing.
+def _cache_get(key: str) -> str | None:
+    return _SUMMARY_CACHE.get(key)
+
+
+def _cache_set(key: str, value: str) -> None:
+    if _SUMMARY_CACHE_MAX_ITEMS <= 0:
+        return
+    if key in _SUMMARY_CACHE:
+        _SUMMARY_CACHE[key] = value
+        return
+    _SUMMARY_CACHE[key] = value
+    _SUMMARY_CACHE_ORDER.append(key)
+    while len(_SUMMARY_CACHE_ORDER) > _SUMMARY_CACHE_MAX_ITEMS:
+        old = _SUMMARY_CACHE_ORDER.pop(0)
+        _SUMMARY_CACHE.pop(old, None)
+
+
+def _compress_for_llm(text: str, *, max_chars: int) -> str:
+    """Reduce input size cheaply to keep Ollama fast.
+
+    This is intentionally simple (no extra deps):
+    - keep headings + bullet lines
+    - keep the first chunk
+    - keep a small tail chunk (often contains conclusions)
+    - include some lines that contain numbers/emails/ids
+
+    This prevents huge PDFs from forcing the model to process too many tokens.
     """
-    text = _clean_for_summarization(text)
-    if not text:
-        return []
 
-    overlap_tokens = max(0, min(overlap_tokens, chunk_tokens - 1))
+    src = (text or "").strip()
+    if not src:
+        return ""
 
-    # Split on sentence-like boundaries to avoid chopping mid-sentence.
-    sentences = re.split(r"(?<=[.!?])\s+", text)
-    chunks: list[str] = []
-    cur = ""
+    lines = [ln.strip() for ln in src.splitlines() if ln.strip()]
+    if not lines:
+        return src[:max_chars]
 
-    for s in sentences:
-        s = s.strip()
-        if not s:
-            continue
+    # 1) Remove repeated header/footer lines (very common in PDF extraction)
+    # We only consider relatively short lines that repeat many times.
+    counts: dict[str, int] = {}
+    for ln in lines:
+        key = ln
+        if 5 <= len(key) <= 80:
+            counts[key] = counts.get(key, 0) + 1
 
-        candidate = (cur + " " + s).strip() if cur else s
-        try:
-            tok_ids = tokenizer.encode(candidate, add_special_tokens=False)
-        except Exception:
-            # If tokenizer fails for unexpectedly long inputs, fallback to char-based heuristics
-            tok_ids = None
+    # If a short line repeats on many lines, it's likely a header/footer.
+    repeat_threshold = max(4, len(lines) // 8)
+    repeated = {ln for ln, c in counts.items() if c >= repeat_threshold}
 
-        if tok_ids is None:
-            # safe fallback: break long sentence into smaller char pieces
-            approx = max(200, chunk_tokens * 4)
-            for i in range(0, len(s), approx):
-                chunks.append(s[i : i + approx])
-            cur = ""
-            continue
+    def is_noise(ln: str) -> bool:
+        if ln in repeated:
+            return True
+        # Page markers and boilerplate noise
+        if re.match(r"^page\s*\d+(\s*of\s*\d+)?$", ln, re.I):
+            return True
+        if re.match(r"^\d+\s*/\s*\d+$", ln):
+            return True
+        if re.match(r"^(confidential|copyright|all rights reserved)\b", ln, re.I):
+            return True
+        # Extremely long 'separator' lines
+        if re.fullmatch(r"[-_=]{10,}", ln):
+            return True
+        return False
 
-        if len(tok_ids) <= chunk_tokens:
-            # fits within a chunk
-            cur = candidate
-            continue
+    filtered = [ln for ln in lines if not is_noise(ln)]
+    if filtered:
+        lines = filtered
 
-        # candidate too large: if current buffer has content, flush it.
-        if cur:
-            chunks.append(cur)
-        # now handle the long sentence that alone exceeds chunk_tokens
-        if len(tok_ids) > chunk_tokens:
-            # break sentence by characters as a last resort
-            approx = max(200, chunk_tokens * 4)
-            for i in range(0, len(s), approx):
-                chunks.append(s[i : i + approx])
-            cur = ""
-        else:
-            cur = s
+    # If the cleaned text is already within budget, return it (still benefits from noise removal).
+    cleaned = "\n".join(lines).strip()
+    if len(cleaned) <= max_chars:
+        return cleaned
 
-    if cur:
-        chunks.append(cur)
+    def looks_important(ln: str) -> bool:
+        # Strong signals: emails, phones, IDs, reservation keywords, dates/times, amounts.
+        if re.match(r"^([\-•\*]|\d+[\.)])\s+", ln):
+            return True
+        if len(ln) <= 90 and ln.isupper():
+            return True
+        if re.search(r"\b(PNR|booking|reservation|ticket|itinerary|seat|gate|terminal|flight|train|bus|hotel|check-?in|check-?out|boarding)\b", ln, re.I):
+            return True
+        if re.search(r"\b(\+?\d[\d\s().-]{7,}\d)\b", ln):
+            return True
+        if re.search(r"\b\d{2,}\b", ln):
+            return True
+        if re.search(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", ln):
+            return True
+        if re.search(r"\b(id|invoice|order|ref|reference|date|amount|total)\b", ln, re.I):
+            return True
+        return False
 
-    return chunks
+    head_budget = int(max_chars * 0.60)
+    tail_budget = int(max_chars * 0.25)
+    mid_budget = max_chars - head_budget - tail_budget
+
+    joined = "\n".join(lines)
+    head_txt = joined[:head_budget]
+    tail_txt = joined[-tail_budget:]
+
+    important_lines: list[str] = []
+    for ln in lines:
+        if looks_important(ln):
+            important_lines.append(ln)
+        if sum(len(x) + 1 for x in important_lines) >= mid_budget:
+            break
+
+    mid_txt = "\n".join(important_lines)
+
+    combined = (head_txt + "\n\n---\n\n" + mid_txt + "\n\n---\n\n" + tail_txt).strip()
+    return combined[:max_chars]
 
 
-@lru_cache(maxsize=1)
-def _get_summarizer(model_name: str):
-    """Create and cache the transformers summarization pipeline."""
-    # Import here so missing deps don't break module import at app startup.
-    from transformers import pipeline, AutoTokenizer, AutoConfig
+def summarize_text(
+    text: str,
+    *,
+    prompt: str | None = None,
+    model: str | None = None,
+) -> str:
+    """Summarize text using a local Ollama model.
 
-    # Use CPU by default (device=-1). If you later add GPU support:
-    # - set DSS_SUMMARY_DEVICE=0 for CUDA:0
-    device = int(os.environ.get("DSS_SUMMARY_DEVICE", "-1"))
+    Output is fully model-generated.
+    """
 
-    # Load tokenizer to allow token-aware chunking elsewhere.
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    try:
-        config = AutoConfig.from_pretrained(model_name)
-        model_max_length = getattr(config, "max_position_embeddings", tokenizer.model_max_length)
-    except Exception:
-        model_max_length = tokenizer.model_max_length
+    src = (text or "").strip()
+    if not src:
+        return ""
 
-    summarizer = pipeline(
-        task="summarization",
-        model=model_name,
-        tokenizer=tokenizer,
-        device=device,
+    model_name = (model or DEFAULT_OLLAMA_MODEL).strip() or "mistral"
+    # One common prompt for all cases: detailed, high-coverage, and forbids vague filler like
+    # "details are provided". Also keeps a consistent structure that our UI can render nicely.
+    system_prompt = (
+        prompt
+        or "You are a professional analyst. Write a detailed, information-rich summary of the content. "
+        "Do NOT miss important points. "
+        "Preserve all named entities exactly as written (people, organizations, locations, products, laws, sections, roles/designations). "
+        "Preserve all reservation/booking/travel details if present (PNR, ticket numbers, flight/train/bus numbers, hotel name, check-in/check-out, route, dates, times, seats, terminals, gates). "
+        "Preserve all IDs/codes/reference numbers exactly as written. Preserve emails and phone numbers exactly. "
+        "Never replace concrete values with vague statements. If a value exists, you MUST write it. "
+        "BANNED vague phrases (do not output these or similar): 'is provided', 'are provided', 'is given', 'are given', 'is mentioned', 'are mentioned', 'is indicated', 'are indicated', 'is listed', 'are listed', 'is available', 'are available'. "
+        "If the input does NOT contain a specific value, write 'Not found' for that field (do not say it is mentioned). "
+        "Rules: No markdown. Do not use **, #, or backticks. Do not write meta phrases like 'the provided text', 'the document', 'this summary', or 'it says'. "
+        "Format: Use section headings on their own lines. Under each heading, use bullet points starting with '-' (one idea per bullet; do not merge unrelated points). "
+        "Use this section order (omit sections that have no info): Overview, Key Details, Important Numbers/Dates, Action Items. "
+        "Be factual: do not invent facts."
     )
 
-    # Return both pipeline and tokenizer + model_max_length via a tuple.
-    return summarizer, tokenizer, int(model_max_length)
+    # Bound input size to keep latency predictable.
+    # For speed without losing key details, we rely on smarter compression rather than harsh truncation.
+    max_chars = int(os.environ.get("DSS_OLLAMA_MAX_CHARS", "7500"))
+    src = _compress_for_llm(src, max_chars=max_chars)
 
+    # Cache: same input + settings => instant response.
+    num_predict = int(os.environ.get("DSS_OLLAMA_NUM_PREDICT", "330"))
+    num_ctx = int(os.environ.get("DSS_OLLAMA_NUM_CTX", "1024"))
+    temperature = float(os.environ.get("DSS_OLLAMA_TEMPERATURE", "0.2"))
+    top_p = float(os.environ.get("DSS_OLLAMA_TOP_P", "0.9"))
+    src_hash = hashlib.sha256(src.encode("utf-8", errors="ignore")).hexdigest()
+    cache_key = f"v1|{model_name}|{max_chars}|{num_ctx}|{num_predict}|{temperature}|{top_p}|{src_hash}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
 
-def summarize_text(text: str, *, config: SummaryConfig | None = None) -> str:
-    """Summarize an arbitrarily long text using map-reduce."""
-    cfg = config or SummaryConfig()
-    text = _clean_for_summarization(text)
-    if not text:
-        return ""
+    # Lazy import so server can start even if dependency is missing.
+    try:
+        import ollama  # type: ignore
+    except Exception as e:  # pragma: no cover
+        raise RuntimeError("Missing dependency 'ollama'. Install it with: pip install ollama") from e
 
-    # summarizer now returns (pipeline, tokenizer, model_max_length)
-    summarizer_obj = _get_summarizer(cfg.model_name)
-    if isinstance(summarizer_obj, tuple):
-        summarizer, tokenizer, model_max = summarizer_obj
-    else:
-        summarizer = summarizer_obj
-        tokenizer = None
-        model_max = 1024
+    # Configure host (supported by the ollama python client).
+    os.environ.setdefault("OLLAMA_HOST", DEFAULT_OLLAMA_HOST)
 
-    # Determine chunking by tokenizer token count when possible.
-    if tokenizer is not None:
-        chunks = _chunk_text_by_tokens(text, tokenizer, chunk_tokens=cfg.chunk_size, overlap_tokens=cfg.chunk_overlap)
-    else:
-        cleaned = _clean_for_summarization(text)
-        if not cleaned:
-            return ""
-        parts = []
-        step = max(1000, cfg.chunk_size)
-        for i in range(0, len(cleaned), step - cfg.chunk_overlap):
-            parts.append(cleaned[i : i + step])
-        chunks = parts
-    if not chunks:
-        return ""
+    try:
+        resp = ollama.chat(
+            model=model_name,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": src},
+            ],
+            options={
+                "temperature": temperature,
+                # Keep generations short for speed; override via env.
+                "num_predict": num_predict,
+                # Smaller context window reduces work for long PDFs.
+                "num_ctx": num_ctx,
+                "top_p": top_p,
+            },
+        )
+    except Exception as e:
+        logger.error("Ollama summarization failed: %s", str(e), exc_info=True)
+        raise RuntimeError(f"Ollama summarization failed: {str(e)}") from e
 
-    # Small input: summarize directly.
-    if len(chunks) == 1:
-        out = summarizer(chunks[0], min_length=cfg.min_length, max_length=cfg.max_length, truncation=True)
-        return (out[0].get("summary_text") or "").strip()
-
-    # Map: summarize each chunk.
-    chunk_summaries: list[str] = []
-    for ch in chunks:
-        try:
-            out = summarizer(ch, min_length=cfg.min_length, max_length=cfg.max_length, truncation=True)
-        except Exception as e:
-            logger.warning("Chunk summarization failed: %s; attempting truncated fallback", str(e))
-            # Fall back to a safe prefix to avoid model internal index errors
-            prefix = ch[: cfg.chunk_size * 4]
-            out = summarizer(prefix, min_length=cfg.min_length, max_length=cfg.max_length, truncation=True)
-
-        s = (out[0].get("summary_text") or "").strip()
-        if s:
-            chunk_summaries.append(s)
-
-    combined = "\n".join(chunk_summaries).strip()
-    if not combined:
-        return ""
-
-    # Reduce: summarize the summaries into a final output.
-    # Make reduce a bit tighter.
-    reduce_min = max(40, cfg.min_length // 2)
-    reduce_max = max(cfg.max_length, cfg.max_length + 40)
-
-    out = summarizer(combined, min_length=reduce_min, max_length=reduce_max)
-    return (out[0].get("summary_text") or "").strip()
-
-
-def _extract_structured_data(text: str) -> dict:
-    """Heuristic extraction of common fields from admit-card / exam-schedule style text.
-
-    Returns a dict with keys: name, enrollment, program, institute, abc_id, schedule (list of dicts).
-    This is intentionally conservative and aims to capture the common fields seen in university admit cards.
-    """
-    out = {
-        "name": None,
-        "enrollment": None,
-        "program": None,
-        "institute": None,
-        "abc_id": None,
-        "schedule": [],
-    }
-
-    if not text:
-        return out
-
-    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-    joined = " ".join(lines)
-
-    # Institute - look for common university name or 'Institute' phrase
-    m = re.search(r"Dharmsinh\s+Desai\s+University|Faculty of Technology|Institute of Technology", text, flags=re.IGNORECASE)
-    if m:
-        out["institute"] = m.group(0).strip()
-
-    # Name
-    m = re.search(r"\bName[:\s]+([A-Z][A-Z\s]+[A-Z0-9])", text)
-    if not m:
-        # try looser pattern: look for line that starts with Name
-        for ln in lines:
-            if ln.lower().startswith("name"):
-                parts = re.split(r"[:\-]", ln, maxsplit=1)
-                if len(parts) > 1:
-                    out["name"] = parts[1].strip()
-                    break
-    else:
-        out["name"] = m.group(1).strip()
-
-    # Enrollment
-    m = re.search(r"Enrollment\s*No\.?[:\s]*([A-Za-z0-9-]+)", text, flags=re.IGNORECASE)
-    if m:
-        out["enrollment"] = m.group(1).strip()
-    else:
-        # fallback: look for tokens that look like enrollment codes (e.g., 23CEUOZ032)
-        m2 = re.search(r"\b\d{2}[A-Z]{2,4}[A-Z0-9]{1,6}\d{2,}\b", text)
-        if m2:
-            out["enrollment"] = m2.group(0)
-
-    # Program
-    m = re.search(r"Program\s*[:\-]?\s*([A-Za-z &]+)", text, flags=re.IGNORECASE)
-    if m:
-        out["program"] = m.group(1).strip()
-
-    # ABC ID or other long numeric ID
-    m = re.search(r"ABC\s*ID\s*[:\s]*([A-Za-z0-9-]+)", text, flags=re.IGNORECASE)
-    if m:
-        out["abc_id"] = m.group(1).strip()
-    else:
-        m2 = re.search(r"\b(\d{9,16})\b", text)
-        if m2:
-            out["abc_id"] = m2.group(1)
-
-    # Schedule extraction: find dates and nearby subject codes and subject names.
-    # We'll scan lines for date patterns and then attempt to find a subject code (e.g., 23CE414) on
-    # the same or neighboring lines and treat text tokens around them as subject name.
-    date_re = re.compile(r"(\d{2}-\d{2}-\d{4})")
-    code_re = re.compile(r"\b[A-Z0-9]{2,6}\d{3,4}\b")
-    time_re = re.compile(r"(\d{1,2}:\d{2}\s*(?:AM|PM))", flags=re.IGNORECASE)
-
-    for idx, ln in enumerate(lines):
-        date_m = date_re.search(ln)
-        if not date_m:
-            continue
-        date = date_m.group(1)
-
-        # Try to find code in same line
-        code = None
-        mcode = code_re.search(ln)
-        if mcode:
-            code = mcode.group(0)
-
-        # subject name heuristics: take previous non-empty line(s) if they look like a title
-        subj = None
-        # look back up to 2 lines for title-like content
-        for back in range(1, 3):
-            if idx - back >= 0:
-                cand = lines[idx - back]
-                # skip lines containing codes/dates
-                if not date_re.search(cand) and not code_re.search(cand):
-                    subj = cand
-                    break
-
-        # fallback: try to extract a run of words after the code in the same line
-        if not subj and code:
-            after = ln.split(code, 1)[-1].strip()
-            # remove time tokens
-            after = time_re.sub("", after)
-            subj = after.strip()
-
-        # time
-        time_m = time_re.search(ln)
-        time_span = None
-        if time_m:
-            start = time_m.group(1)
-            # look for 'to' and an end time
-            rest = ln[time_m.end() :]
-            end_m = time_re.search(rest)
-            end = end_m.group(1) if end_m else None
-            if end:
-                time_span = f"{start} to {end}"
-            else:
-                time_span = start
-
-        entry = {"date": date, "code": code or "", "subject": subj or "", "time": time_span or ""}
-        out["schedule"].append(entry)
-
+    content = ((resp or {}).get("message") or {}).get("content")
+    out = (content or "").strip()
+    if out:
+        _cache_set(cache_key, out)
     return out
 
 
-def craft_structured_summary(text: str) -> str:
-    """Create a deterministic, human-readable summary from structured fields extracted from `text`.
+def stream_summary(
+    text: str,
+    *,
+    prompt: str | None = None,
+    model: str | None = None,
+):
+    """Yield summary text chunks as they are generated by Ollama.
 
-    This intentionally preserves IDs and exact tokens found in the document and mirrors the style of the
-    example `gemini` response provided by the user.
+    This is used by the streaming API endpoint to avoid UI lag and to show
+    progress immediately.
     """
-    sd = _extract_structured_data(text)
 
-    parts = []
-    parts.append("Admit Card Summary: ")
-    # Title line
-    program = sd.get("program") or ""
-    inst = sd.get("institute") or ""
-    title = f"{program} " if program else ""
-    title += "(Exam Details)"
-    parts.append(title)
-    parts.append("")
+    src = (text or "").strip()
+    if not src:
+        return
 
-    # Personal & Institutional Details
-    pd = []
-    if sd.get("name"):
-        pd.append(f"Name: {sd['name'].title()}")
-    if sd.get("enrollment"):
-        pd.append(f"Enrollment No.: {sd['enrollment']}")
-    if program:
-        pd.append(f"Program: {program}")
-    if inst:
-        pd.append(f"Institute: {inst}")
-    if sd.get("abc_id"):
-        pd.append(f"ABC ID: {sd['abc_id']}")
+    model_name = (model or DEFAULT_OLLAMA_MODEL).strip() or "mistral"
+    system_prompt = (
+        prompt
+        or "You are a professional analyst. Write a detailed, information-rich summary of the content. "
+        "Preserve all named entities exactly as written. Preserve all IDs/codes/reference numbers, dates/times, emails, phone numbers exactly as written. "
+        "Never replace concrete values with vague statements. If a value exists, you MUST write it. "
+        "BANNED vague phrases (do not output these or similar): 'is provided', 'are provided', 'is given', 'are given', 'is mentioned', 'are mentioned', 'is indicated', 'are indicated', 'is listed', 'are listed', 'is available', 'are available'. "
+        "If the input does NOT contain a specific value, write 'Not found' for that field. "
+        "Rules: No markdown. Do not use **, #, or backticks. Do not write meta phrases like 'the provided text', 'the document', 'this summary', or 'it says'. "
+        "Format: Use section headings on their own lines. Under each heading, use bullet points starting with '-' (one idea per bullet). "
+        "Use this section order (omit sections that have no info): Overview, Key Details, Important Numbers/Dates, Action Items."
+    )
 
-    if pd:
-        parts.append("Personal & Institutional Details")
-        parts.extend(pd)
-        parts.append("")
+    max_chars = int(os.environ.get("DSS_OLLAMA_MAX_CHARS", "7500"))
+    src = _compress_for_llm(src, max_chars=max_chars)
 
-    # Examination Schedule
-    sched = sd.get("schedule") or []
-    if sched:
-        parts.append("Examination Schedule")
-        parts.append("All exams are Theory type and held at the institute unless noted otherwise.")
-        parts.append("")
-        # Table-like lines
-        parts.append("Date\tSubject Code\tSubject Name\tTime")
-        for e in sched:
-            date = e.get("date", "")
-            code = e.get("code", "")
-            subj = e.get("subject", "")
-            time = e.get("time", "")
-            # normalize spacing
-            subj = re.sub(r"\s+", " ", subj).strip()
-            parts.append(f"{date}\t{code}\t{subj}\t{time}")
-
-    # Join with sensible newlines
-    return "\n".join([p for p in parts if p is not None and p != ""]).strip()
-
-
-def generate_best_summary(text: str) -> str:
-    """Return an improved summary for `text`.
-
-    Strategy:
-    - Build a deterministic structured summary from extracted fields (this preserves IDs and dates).
-    - If a summarization model is available and the document is long/complex, optionally use the model to produce
-      an additional abstractive paragraph and append it after the structured block. For now we return the
-      deterministic structured block as the primary summary to ensure fidelity.
-    """
     try:
-        structured = craft_structured_summary(text)
-        # If the structured summary looks too small and a model summarizer is available, add a model paragraph.
-        # However, to avoid losing facts we keep the structured block as primary.
-        return structured
-    except Exception:
-        # As a last resort, fall back to the existing abstractive summarizer.
-        try:
-            return summarize_text(text)
-        except Exception:
-            return ""
+        import ollama  # type: ignore
+    except Exception as e:  # pragma: no cover
+        raise RuntimeError("Missing dependency 'ollama'. Install it with: pip install ollama") from e
+
+    os.environ.setdefault("OLLAMA_HOST", DEFAULT_OLLAMA_HOST)
+
+    try:
+        # stream=True makes the client yield incremental chunks.
+        for part in ollama.chat(
+            model=model_name,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": src},
+            ],
+            options={
+                "temperature": float(os.environ.get("DSS_OLLAMA_TEMPERATURE", "0.2")),
+                "num_predict": int(os.environ.get("DSS_OLLAMA_NUM_PREDICT", "330")),
+                "num_ctx": int(os.environ.get("DSS_OLLAMA_NUM_CTX", "1024")),
+                "top_p": float(os.environ.get("DSS_OLLAMA_TOP_P", "0.9")),
+            },
+            stream=True,
+        ):
+            content = ((part or {}).get("message") or {}).get("content")
+            if content:
+                yield content
+    except Exception as e:
+        logger.error("Ollama streaming failed: %s", str(e), exc_info=True)
+        raise RuntimeError(f"Ollama streaming failed: {str(e)}") from e
