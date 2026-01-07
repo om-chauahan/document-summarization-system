@@ -108,7 +108,7 @@ export default function Upload() {
     }
 
     const sentences = [
-      "Extracting text from your PDF",
+      "Extracting text from your document",
       "Cleaning and normalizing text",
       "Detecting important names and entities",
       "Finding key details and numbers",
@@ -220,7 +220,8 @@ export default function Upload() {
   }, [status, summary]);
 
   const fileHint = useMemo(() => {
-    if (!file) return "PDF only • Text PDFs + scanned PDFs (OCR)";
+    if (!file)
+      return "PDF, TXT, DOCX, PNG/JPG • PDFs support OCR (scanned documents)";
     return `${file.name} • ${(file.size / 1024 / 1024).toFixed(2)} MB`;
   }, [file]);
 
@@ -302,15 +303,16 @@ export default function Upload() {
             <div className="heroLabel">UPLOAD DOCUMENT</div>
             <h1 className="heroTitle">Upload your document</h1>
             <p className="heroDescription">
-              Upload a PDF to generate a clean, readable summary in seconds. We
-              support both text-based PDFs and scanned PDFs via OCR.
+              Upload a document to generate a clean, readable summary in
+              seconds. Supported: PDF, TXT, DOCX, PNG/JPG (OCR for scanned
+              documents).
             </p>
 
             <form className="uploadForm" onSubmit={handleSummarize}>
               <label className="fileUploadLabel">
                 <input
                   type="file"
-                  accept=".pdf"
+                  accept=".pdf,.txt,.docx,.png,.jpg,.jpeg"
                   onChange={(e) => setFile(e.target.files?.[0] || null)}
                   className="fileInput"
                   disabled={status === "loading"}
@@ -403,9 +405,9 @@ export default function Upload() {
                 <div className="uploadFeature">
                   <div className="uploadFeatureIcon">📊</div>
                   <div className="uploadFeatureContent">
-                    <div className="uploadFeatureTitle">PDF Ready</div>
+                    <div className="uploadFeatureTitle">Multi-format</div>
                     <div className="uploadFeatureDesc">
-                      Text PDFs • Scanned PDFs (OCR)
+                      PDF • TXT • DOCX • PNG/JPG (OCR)
                     </div>
                   </div>
                 </div>

@@ -9,9 +9,9 @@ export default function Home() {
       <main className="heroSection">
         <div className="heroContent">
           <div className="heroLeft">
-            <div className="heroLabel">DOCUMENT SUMMARIZATION SYSTEM</div>
+            <div className="heroLabel">SYNOPSIS</div>
 
-            <h1 className="heroTitle">Summarize better with DSS</h1>
+            <h1 className="heroTitle">Summarize better with Synopsis</h1>
 
             <p className="heroDescription">
               Software that's powerful, not overpowering. Seamlessly process
@@ -50,7 +50,7 @@ export default function Home() {
                 <div className="line strong">Accurate summaries</div>
                 <div className="line light">Key points • Action items</div>
                 <div className="line medium">Fast processing</div>
-                <div className="line light">PDF • DOCX • OCR-ready</div>
+                <div className="line light">PDF • DOCX • TXT • PNG • JPG</div>
               </div>
 
               <div className="typoHighlights">

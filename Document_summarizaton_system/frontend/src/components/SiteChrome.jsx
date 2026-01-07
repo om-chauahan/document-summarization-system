@@ -6,7 +6,7 @@ export function SiteHeader() {
       <div className="headerContent">
         <div className="headerLeft">
           <Link to="/" className="logo" style={{ textDecoration: "none" }}>
-            DSS
+            Synopsis
           </Link>
         </div>
 
@@ -31,12 +31,12 @@ export function SiteFooter() {
     <footer className="footerSection">
       <div className="footerContent">
         <div className="footerTop">
-          <span className="footerBrand">DSS</span>
+          <span className="footerBrand">Synopsis</span>
 
           <div className="footerContent">
             <p className="footerText">
               10,000+ users in over 50 countries summarize their documents with
-              DSS
+              Synopsis
             </p>
           </div>
 
@@ -52,7 +52,7 @@ export function SiteFooter() {
 
         <div className="footerBottom">
           <p className="footerCopy">
-            © {new Date().getFullYear()} DSS. All rights reserved.
+            © {new Date().getFullYear()} Synopsis. All rights reserved.
           </p>
         </div>
       </div>

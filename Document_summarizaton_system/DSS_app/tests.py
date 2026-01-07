@@ -4,6 +4,34 @@ from django.test import Client, TestCase
 from django.core.files.uploadedfile import SimpleUploadedFile
 from unittest.mock import patch
 
+class ExtractionSmokeTests(TestCase):
+	def test_extract_text_from_txt_bytes(self):
+		from .views import extract_text_from_txt_bytes
+
+		raw = b"Hello world\nThis is a test.\n"
+		out = extract_text_from_txt_bytes(raw)
+		self.assertIn("Hello world", out)
+		self.assertIn("This is a test.", out)
+
+	def test_extract_text_from_docx_bytes(self):
+		try:
+			from docx import Document
+		except Exception:
+			self.skipTest("python-docx not installed")
+
+		from .views import extract_text_from_docx_bytes
+
+		doc = Document()
+		doc.add_paragraph("First paragraph")
+		doc.add_paragraph("Second paragraph")
+
+		import io
+
+		buf = io.BytesIO()
+		doc.save(buf)
+		out = extract_text_from_docx_bytes(buf.getvalue())
+		self.assertIn("First paragraph", out)
+		self.assertIn("Second paragraph", out)
 
 class SummarizationHelpersTests(TestCase):
 	def test_summarize_text_empty_input(self):

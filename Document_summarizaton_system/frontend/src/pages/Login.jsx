@@ -168,7 +168,7 @@ export default function Login() {
         </p>
 
         <p className="authAlt">
-          New to DSS?{" "}
+          New to Synopsis?{" "}
           <Link to="/signup" className="textLink" onClick={goSignup}>
             Create an account
           </Link>

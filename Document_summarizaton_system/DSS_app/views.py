@@ -7,6 +7,11 @@ import os
 import shutil
 import re
 
+try:
+    from docx import Document as DocxDocument
+except Exception:  # pragma: no cover
+    DocxDocument = None
+
 import PyPDF2
 
 try:
@@ -38,6 +43,83 @@ except Exception:  # pragma: no cover
 def _normalize_text(text: str) -> str:
     """Light normalization to reduce whitespace noise."""
     return "\n".join(line.rstrip() for line in (text or "").splitlines()).strip()
+
+
+def extract_text_from_txt_bytes(raw: bytes) -> str:
+    """Extract text from a plain text file.
+
+    Tries UTF-8 first, then falls back to latin-1 as a last resort.
+    """
+    if not raw:
+        return ""
+    try:
+        return _normalize_text(raw.decode("utf-8"))
+    except UnicodeDecodeError:
+        return _normalize_text(raw.decode("latin-1", errors="ignore"))
+
+
+def extract_text_from_docx_bytes(raw: bytes) -> str:
+    """Extract text from a .docx file using python-docx."""
+    if not raw:
+        return ""
+    if DocxDocument is None:
+        logger.warning("DOCX extraction skipped (python-docx not installed)")
+        return ""
+
+    try:
+        doc = DocxDocument(io.BytesIO(raw))
+        parts: list[str] = []
+        for p in doc.paragraphs:
+            t = (p.text or "").strip()
+            if t:
+                parts.append(t)
+        return _normalize_text("\n".join(parts))
+    except Exception:
+        logger.exception("DOCX extraction failed")
+        return ""
+
+
+def extract_text_from_image_bytes(raw: bytes) -> str:
+    """Extract text from an image via OCR (png/jpg/jpeg)."""
+    if not raw:
+        return ""
+    if pytesseract is None:
+        logger.warning("Image OCR skipped (pytesseract not installed)")
+        return ""
+
+    try:
+        from PIL import Image
+
+        img = Image.open(io.BytesIO(raw))
+        txt = pytesseract.image_to_string(img, config="--oem 3 --psm 6") or ""
+        return _normalize_text(txt)
+    except Exception:
+        logger.exception("Image OCR failed")
+        return ""
+
+
+def extract_text_from_uploaded_file(uploaded_file) -> tuple[str, str]:
+    """Extract text from an uploaded file.
+
+    Returns: (extracted_text, detected_type)
+    """
+    name = (uploaded_file.name or "").lower()
+    raw = uploaded_file.read()
+
+    if name.endswith(".pdf"):
+        text = extract_text_from_pdf_bytes(raw, ocr_if_needed=True)
+        return text, "pdf"
+
+    if name.endswith(".txt"):
+        return extract_text_from_txt_bytes(raw), "txt"
+
+    if name.endswith(".docx"):
+        return extract_text_from_docx_bytes(raw), "docx"
+
+    if name.endswith((".png", ".jpg", ".jpeg")):
+        return extract_text_from_image_bytes(raw), "image"
+
+    return "", "unsupported"
 
 
 def extract_text_from_pdf_bytes(pdf_bytes: bytes, *, ocr_if_needed: bool = True) -> str:
@@ -194,7 +276,7 @@ def add_cors_headers(response):
 def summarize_document(request):
     """
     API endpoint to handle document upload and extract text from PDF files.
-    Only PDF files are supported.
+    Supported formats: PDF, TXT, DOCX, and images (PNG/JPG) via OCR.
     """
     # Handle CORS preflight request
     if request.method == "OPTIONS":
@@ -223,13 +305,7 @@ def summarize_document(request):
         file_name = uploaded_file.name.lower()
         logger.info(f"Processing file: {file_name}, Size: {uploaded_file.size} bytes")
 
-        # Check if file is PDF
-        if not file_name.endswith('.pdf'):
-            logger.warning(f"Non-PDF file attempted: {file_name}")
-            response = JsonResponse({
-                'error': 'Only PDF files are supported. Other formats are not implemented yet.'
-            }, status=400)
-            return add_cors_headers(response)
+        # We support multiple formats now; file-type validation happens during extraction.
 
         # Check file size (limit to 50MB)
         if uploaded_file.size > 50 * 1024 * 1024:
@@ -239,36 +315,27 @@ def summarize_document(request):
             }, status=400)
             return add_cors_headers(response)
 
-        # Read the PDF file
-        try:
-            pdf_file = uploaded_file.read()
-            if not pdf_file:
-                logger.warning("Empty file uploaded")
-                response = JsonResponse({
-                    'error': 'File is empty'
-                }, status=400)
-                return add_cors_headers(response)
-        except Exception as e:
-            logger.error(f"Error reading file: {str(e)}")
-            response = JsonResponse({
-                'error': f'Error reading file: {str(e)}'
-            }, status=400)
+        # Extract text based on file type
+        extracted_text, detected_type = extract_text_from_uploaded_file(uploaded_file)
+
+        if detected_type == "unsupported":
+            response = JsonResponse(
+                {
+                    'error': 'Unsupported file type. Supported: PDF, TXT, DOCX, PNG/JPG (OCR).'
+                },
+                status=400,
+            )
             return add_cors_headers(response)
 
-        # Validate PDF structure early (quick check for totally invalid files)
-        try:
-            pdf_reader = PyPDF2.PdfReader(io.BytesIO(pdf_file))
-            num_pages = len(pdf_reader.pages)
-            logger.info(f"PDF parsed successfully. Pages: {num_pages}")
-        except PyPDF2.errors.PdfReadError as e:
-            logger.error(f"Invalid PDF file: {str(e)}")
-            response = JsonResponse({
-                'error': f'Invalid PDF file: {str(e)}'
-            }, status=400)
+        if not extracted_text.strip():
+            if detected_type == "docx" and DocxDocument is None:
+                msg = 'DOCX support is not available on the server. Please install python-docx.'
+            elif detected_type == "image" and pytesseract is None:
+                msg = 'Image OCR is not available on the server. Please install pytesseract and ensure Tesseract is installed.'
+            else:
+                msg = 'No text could be extracted from the file.'
+            response = JsonResponse({'error': msg}, status=400)
             return add_cors_headers(response)
-
-        # Extract text using a higher-accuracy pipeline
-        extracted_text = extract_text_from_pdf_bytes(pdf_file, ocr_if_needed=True)
 
         # Normalize spacing / line-wrapping issues so display and summarization are cleaner.
         try:
@@ -277,12 +344,9 @@ def summarize_document(request):
             # Don't fail extraction for normalization issues; log and continue with raw text.
             logger.exception("Failed to normalize extracted text")
 
-        # Check if text was extracted
+        # Check if text was extracted after normalization
         if not extracted_text.strip():
-            logger.warning("No text could be extracted from PDF")
-            response = JsonResponse({
-                'error': 'No text could be extracted from the PDF. If it is scanned, enable/install OCR dependencies (pytesseract + pdf2image) and ensure Tesseract is installed.'
-            }, status=400)
+            response = JsonResponse({'error': 'No text could be extracted from the file.'}, status=400)
             return add_cors_headers(response)
 
         logger.info(f"Text extracted successfully. Length: {len(extracted_text)} characters")
@@ -312,7 +376,8 @@ def summarize_document(request):
             'summary': summary,
             'summarization_used': True,
             'extracted_text_length': len(extracted_text),
-            'message': 'PDF text extracted successfully'
+            'detected_type': detected_type,
+            'message': 'Document text extracted successfully'
         }, status=200)
         return add_cors_headers(response)
 
@@ -345,8 +410,8 @@ def summarize_document_stream(request):
         return add_cors_headers(response)
 
     uploaded_file = request.FILES['file']
-    if not uploaded_file.name or not uploaded_file.name.lower().endswith('.pdf'):
-        response = JsonResponse({'error': 'Only PDF files are supported.'}, status=400)
+    if not uploaded_file.name:
+        response = JsonResponse({'error': 'File has no name'}, status=400)
         return add_cors_headers(response)
 
     if model_stream_summary is None:
@@ -358,25 +423,29 @@ def summarize_document_stream(request):
         )
         return add_cors_headers(response)
 
-    try:
-        pdf_file = uploaded_file.read()
-    except Exception as e:
-        response = JsonResponse({'error': f'Error reading file: {str(e)}'}, status=400)
-        return add_cors_headers(response)
+    extracted_text, detected_type = extract_text_from_uploaded_file(uploaded_file)
 
-    extracted_text = extract_text_from_pdf_bytes(pdf_file, ocr_if_needed=True)
+    if detected_type == "unsupported":
+        response = JsonResponse(
+            {
+                'error': 'Unsupported file type. Supported: PDF, TXT, DOCX, PNG/JPG (OCR).'
+            },
+            status=400,
+        )
+        return add_cors_headers(response)
     try:
         extracted_text = normalize_extracted_text(extracted_text)
     except Exception:
         logger.exception("Failed to normalize extracted text")
 
     if not extracted_text.strip():
-        response = JsonResponse(
-            {
-                'error': 'No text could be extracted from the PDF. If it is scanned, enable/install OCR dependencies and ensure Tesseract is installed.'
-            },
-            status=400,
-        )
+        if detected_type == "docx" and DocxDocument is None:
+            msg = 'DOCX support is not available on the server. Please install python-docx.'
+        elif detected_type == "image" and pytesseract is None:
+            msg = 'Image OCR is not available on the server. Please install pytesseract and ensure Tesseract is installed.'
+        else:
+            msg = 'No text could be extracted from the file.'
+        response = JsonResponse({'error': msg}, status=400)
         return add_cors_headers(response)
 
     def sse_pack(event: str, data: str) -> str:
@@ -392,6 +461,7 @@ def summarize_document_stream(request):
         meta_json = (
             '{'
             f'"extracted_text_length": {len(extracted_text)},'
+            f'"detected_type": "{detected_type}",'
             '"summarization_used": true'
             '}'
         )
