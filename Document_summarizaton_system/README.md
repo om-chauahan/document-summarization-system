@@ -51,6 +51,44 @@ Environment variables:
 - `DSS_OLLAMA_NUM_CTX` (default: `1536`) — lower = faster but less context
 - `DSS_OLLAMA_TOP_P` (default: `0.9`)
 
+### Google OAuth (Continue with Google)
+
+This project supports a **server-side Google OAuth** flow (Authorization Code) using Django sessions.
+
+#### 1) Create OAuth Client in Google Cloud Console
+
+- Go to **Google Cloud Console** → APIs & Services → **OAuth consent screen**
+  - Choose **External**
+  - Fill app info
+  - Add test users (for development)
+- Then go to **Credentials** → **Create Credentials** → **OAuth client ID**
+  - Application type: **Web application**
+  - **Authorized JavaScript origins**:
+    - `http://localhost:5173`
+    - `http://127.0.0.1:5173`
+  - **Authorized redirect URIs**:
+    - `http://127.0.0.1:8000/api/auth/google/callback/`
+    - (optional) `http://localhost:8000/api/auth/google/callback/`
+
+#### 2) Set environment variables (backend)
+
+Set these before running Django (either export them in your shell or copy `.env.example` → `.env` and fill it in):
+
+```bash
+export DSS_GOOGLE_CLIENT_ID="<your-client-id>"
+export DSS_GOOGLE_CLIENT_SECRET="<your-client-secret>"
+export DSS_GOOGLE_REDIRECT_URI="http://127.0.0.1:8000/api/auth/google/callback/"
+export DSS_FRONTEND_BASE="http://localhost:5173"
+```
+
+#### 3) Use it in the UI
+
+The **Continue with Google** buttons on **Login** and **Signup** redirect to:
+
+- `GET /api/auth/google/login/?next=/upload`
+
+After successful login, the backend redirects the browser to the `next` frontend path.
+
 ### Performance tips (MacBooks / low-lag)
 
 - If your Mac starts lagging during summarization, reduce input + output:
@@ -66,5 +104,5 @@ Environment variables:
 git status
 git add .
 git commit -m "A descriptive commit message"
-git push
+git push origin main
 ```

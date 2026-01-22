@@ -10,10 +10,37 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/4.2/ref/settings/
 """
 
+import os
 from pathlib import Path
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Optional: load environment variables from a local .env file.
+# We keep this best-effort so production deployments can use real env vars.
+try:  # pragma: no cover
+    from dotenv import load_dotenv
+
+    # Load .env file from the project root (where manage.py is located)
+    env_path = BASE_DIR / ".env"
+    if env_path.exists():
+        load_dotenv(env_path, override=True)
+        # Also manually parse .env file as fallback if dotenv doesn't work
+        try:
+            with open(env_path, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith('#') and '=' in line:
+                        key, value = line.split('=', 1)
+                        key = key.strip()
+                        value = value.strip().strip('"').strip("'")
+                        if key and value and key not in os.environ:
+                            os.environ[key] = value
+        except Exception:
+            pass
+except Exception:
+    # Silently fail - dotenv is optional, we'll read .env file directly in views if needed
+    pass
 
 
 # Quick-start development settings - unsuitable for production
@@ -25,7 +52,21 @@ SECRET_KEY = 'django-insecure-g)_=@a&)-yg08(f6jj0oyyq5(#6yic1isy5bu4qsb4-8+yntoy
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = ["localhost", "127.0.0.1"]
+
+
+# --- Dev session/CORS friendliness ---
+# We use Django's session cookie from a different origin (Vite dev server).
+# For cross-origin XHR/fetch with credentials, cookies must be SameSite=None.
+# In production, you should revisit these settings and use HTTPS.
+SESSION_COOKIE_SAMESITE = "None"
+SESSION_COOKIE_SECURE = False
+SESSION_COOKIE_HTTPONLY = True
+
+# We do not use CSRF cookies for our JSON auth endpoints (they're csrf_exempt),
+# but keep this aligned for any future non-exempt endpoints.
+CSRF_COOKIE_SAMESITE = "None"
+CSRF_COOKIE_SECURE = False
 
 
 # Application definition
@@ -42,6 +83,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'DSS_app.middleware.DevCorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -155,3 +197,22 @@ LOGGING = {
 # File upload settings
 DATA_UPLOAD_MAX_MEMORY_SIZE = 52428800  # 50MB
 FILE_UPLOAD_MAX_MEMORY_SIZE = 52428800  # 50MB
+
+# Google OAuth Settings
+# Get these from Google Cloud Console: https://console.cloud.google.com/apis/credentials
+# Authorized JavaScript origins: http://localhost:5173
+# Authorized redirect URIs:
+#   - http://127.0.0.1:8000/api/auth/google/callback/
+#   - http://localhost:8000/api/auth/google/callback/
+DSS_GOOGLE_CLIENT_ID = os.getenv("DSS_GOOGLE_CLIENT_ID", "").strip()
+DSS_GOOGLE_CLIENT_SECRET = os.getenv("DSS_GOOGLE_CLIENT_SECRET", "").strip()
+DSS_GOOGLE_REDIRECT_URI = os.getenv("DSS_GOOGLE_REDIRECT_URI", "http://localhost:8000/api/auth/google/callback/").strip()
+
+# Frontend base URL (where the SPA is served). Used for OAuth redirects.
+DSS_FRONTEND_BASE = os.getenv("DSS_FRONTEND_BASE", "http://localhost:5173")
+
+# Razorpay (Test Mode / Payments)
+# Keep KEY_SECRET on the backend only.
+# In local dev, you can set these in a .env file at the project root.
+DSS_RAZORPAY_KEY_ID = os.getenv("DSS_RAZORPAY_KEY_ID", "").strip()
+DSS_RAZORPAY_KEY_SECRET = os.getenv("DSS_RAZORPAY_KEY_SECRET", "").strip()

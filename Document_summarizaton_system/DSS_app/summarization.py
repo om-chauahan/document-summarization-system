@@ -106,20 +106,26 @@ def _compress_for_llm(text: str, *, max_chars: int) -> str:
         return cleaned
 
     def looks_important(ln: str) -> bool:
-        # Strong signals: emails, phones, IDs, reservation keywords, dates/times, amounts.
+        # General heuristics to identify information-rich lines (works for any document type)
+        # Lines with structured formatting (bullets, numbered lists)
         if re.match(r"^([\-•\*]|\d+[\.)])\s+", ln):
             return True
+        # Short all-caps lines (often headings or labels)
         if len(ln) <= 90 and ln.isupper():
             return True
-        if re.search(r"\b(PNR|booking|reservation|ticket|itinerary|seat|gate|terminal|flight|train|bus|hotel|check-?in|check-?out|boarding)\b", ln, re.I):
+        # Lines containing structured data patterns
+        if re.search(r"\b(\+?\d[\d\s().-]{7,}\d)\b", ln):  # Phone numbers
             return True
-        if re.search(r"\b(\+?\d[\d\s().-]{7,}\d)\b", ln):
+        if re.search(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", ln):  # Email addresses
             return True
-        if re.search(r"\b\d{2,}\b", ln):
+        # Lines with multiple numbers (likely contain data/identifiers)
+        if len(re.findall(r"\b\d{2,}\b", ln)) >= 2:
             return True
-        if re.search(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", ln):
+        # Lines with common data identifiers (general patterns, not specific to one domain)
+        if re.search(r"\b([A-Z]{2,}\d+|\d+[A-Z]{2,}|[A-Z]+\s*\d+|\d+\s*[A-Z]+)\b", ln):  # Alphanumeric codes
             return True
-        if re.search(r"\b(id|invoice|order|ref|reference|date|amount|total)\b", ln, re.I):
+        # Lines with date/time patterns
+        if re.search(r"\b(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{1,2}:\d{2})\b", ln):
             return True
         return False
 
@@ -160,27 +166,31 @@ def summarize_text(
         return ""
 
     model_name = (model or DEFAULT_OLLAMA_MODEL).strip() or "mistral"
-    # One common prompt for all cases: detailed, high-coverage, and forbids vague filler like
-    # "details are provided". Also keeps a consistent structure that our UI can render nicely.
+    # General, efficient prompt that works for any document type without manual cases
     system_prompt = (
         prompt
-        or "You are a professional analyst. Write a detailed, information-rich summary of the content. "
-        "Do NOT miss important points. "
-        "Preserve all named entities exactly as written (people, organizations, locations, products, laws, sections, roles/designations). "
-        "Preserve all reservation/booking/travel details if present (PNR, ticket numbers, flight/train/bus numbers, hotel name, check-in/check-out, route, dates, times, seats, terminals, gates). "
-        "Preserve all IDs/codes/reference numbers exactly as written. Preserve emails and phone numbers exactly. "
-        "Never replace concrete values with vague statements. If a value exists, you MUST write it. "
-        "BANNED vague phrases (do not output these or similar): 'is provided', 'are provided', 'is given', 'are given', 'is mentioned', 'are mentioned', 'is indicated', 'are indicated', 'is listed', 'are listed', 'is available', 'are available'. "
-        "If the input does NOT contain a specific value, write 'Not found' for that field (do not say it is mentioned). "
-        "Rules: No markdown. Do not use **, #, or backticks. Do not write meta phrases like 'the provided text', 'the document', 'this summary', or 'it says'. "
-        "Format: Use section headings on their own lines. Under each heading, use bullet points starting with '-' (one idea per bullet; do not merge unrelated points). "
-        "Use this section order (omit sections that have no info): Overview, Key Details, Important Numbers/Dates, Action Items. "
-        "Be factual: do not invent facts."
+        or "You are an expert document analyst. Create a comprehensive, accurate summary that captures all essential information from the provided content.\n\n"
+        "Core principles:\n"
+        "- Extract and preserve all factual information exactly as it appears (names, numbers, dates, codes, identifiers, contact details)\n"
+        "- Maintain accuracy: only include information that is explicitly stated in the source\n"
+        "- Be thorough: include all significant details, not just high-level points\n"
+        "- Use clear, direct language without vague references or meta-commentary\n\n"
+        "Output format:\n"
+        "- Use descriptive section headings on separate lines\n"
+        "- Under each section, use bullet points (starting with '-') for individual facts\n"
+        "- Organize information logically based on the document's structure and content\n"
+        "- Do not use markdown formatting (no **, #, or backticks)\n"
+        "- Write directly about the content, not about the document itself\n\n"
+        "Quality standards:\n"
+        "- Every important detail from the source should appear in the summary\n"
+        "- Preserve exact values, identifiers, and specific information\n"
+        "- Group related information under appropriate headings\n"
+        "- Ensure the summary is self-contained and informative"
     )
 
     # Bound input size to keep latency predictable.
     # For speed without losing key details, we rely on smarter compression rather than harsh truncation.
-    max_chars = int(os.environ.get("DSS_OLLAMA_MAX_CHARS", "7500"))
+    max_chars = int(os.environ.get("DSS_OLLAMA_MAX_CHARS", "10500"))
     src = _compress_for_llm(src, max_chars=max_chars)
 
     # Cache: same input + settings => instant response.
@@ -247,16 +257,26 @@ def stream_summary(
         return
 
     model_name = (model or DEFAULT_OLLAMA_MODEL).strip() or "mistral"
+    # General, efficient prompt that works for any document type without manual cases
     system_prompt = (
         prompt
-        or "You are a professional analyst. Write a detailed, information-rich summary of the content. "
-        "Preserve all named entities exactly as written. Preserve all IDs/codes/reference numbers, dates/times, emails, phone numbers exactly as written. "
-        "Never replace concrete values with vague statements. If a value exists, you MUST write it. "
-        "BANNED vague phrases (do not output these or similar): 'is provided', 'are provided', 'is given', 'are given', 'is mentioned', 'are mentioned', 'is indicated', 'are indicated', 'is listed', 'are listed', 'is available', 'are available'. "
-        "If the input does NOT contain a specific value, write 'Not found' for that field. "
-        "Rules: No markdown. Do not use **, #, or backticks. Do not write meta phrases like 'the provided text', 'the document', 'this summary', or 'it says'. "
-        "Format: Use section headings on their own lines. Under each heading, use bullet points starting with '-' (one idea per bullet). "
-        "Use this section order (omit sections that have no info): Overview, Key Details, Important Numbers/Dates, Action Items."
+        or "You are an expert document analyst. Create a comprehensive, accurate summary that captures all essential information from the provided content.\n\n"
+        "Core principles:\n"
+        "- Extract and preserve all factual information exactly as it appears (names, numbers, dates, codes, identifiers, contact details)\n"
+        "- Maintain accuracy: only include information that is explicitly stated in the source\n"
+        "- Be thorough: include all significant details, not just high-level points\n"
+        "- Use clear, direct language without vague references or meta-commentary\n\n"
+        "Output format:\n"
+        "- Use descriptive section headings on separate lines\n"
+        "- Under each section, use bullet points (starting with '-') for individual facts\n"
+        "- Organize information logically based on the document's structure and content\n"
+        "- Do not use markdown formatting (no **, #, or backticks)\n"
+        "- Write directly about the content, not about the document itself\n\n"
+        "Quality standards:\n"
+        "- Every important detail from the source should appear in the summary\n"
+        "- Preserve exact values, identifiers, and specific information\n"
+        "- Group related information under appropriate headings\n"
+        "- Ensure the summary is self-contained and informative"
     )
 
     max_chars = int(os.environ.get("DSS_OLLAMA_MAX_CHARS", "7500"))

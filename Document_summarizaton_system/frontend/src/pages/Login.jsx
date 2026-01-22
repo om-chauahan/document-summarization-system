@@ -1,17 +1,66 @@
-import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useMemo, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import AuthShell from "../components/AuthShell";
+import { API_BASE } from "../lib/auth";
+import { storeUser } from "../lib/userSession";
 
 export default function Login() {
   const navigate = useNavigate();
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [rememberMe, setRememberMe] = useState(true);
+  const location = useLocation();
+  const from = location?.state?.from || "/upload";
+  const oauthHint = useMemo(() => {
+    try {
+      const params = new URLSearchParams(location.search || "");
+      const code = (params.get("oauth") || "").trim();
+      if (!code) return "";
 
-  function handleSubmit(e) {
+      if (code === "failed") {
+        return "Google sign-in didn’t finish. This can happen if cookies are blocked or you cancelled the consent screen. Please try again.";
+      }
+      if (code === "misconfigured") {
+        return "Google sign-in isn’t configured on the server yet. Ask the admin to set DSS_GOOGLE_CLIENT_ID/SECRET/REDIRECT_URI, then restart the backend.";
+      }
+      if (code === "noemail") {
+        return "Google didn’t return an email address for your account. Please use a different Google account or sign up with email/mobile.";
+      }
+
+      return "Google sign-in didn’t finish. Please try again.";
+    } catch {
+      return "";
+    }
+  }, [location.search]);
+  const [identifier, setIdentifier] = useState("");
+  const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  async function handleSubmit(e) {
     e.preventDefault();
-    // UI-first: navigate to the tool page (backend auth not implemented).
-    navigate("/upload");
+    setLoading(true);
+    setError("");
+
+    try {
+      const res = await fetch(`${API_BASE}/api/auth/login/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ identifier, password }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.ok) {
+        setError(data?.error || "Invalid credentials.");
+        return;
+      }
+
+      if (data?.user) {
+        storeUser(data.user);
+      }
+
+      navigate(from, { replace: true });
+    } finally {
+      setLoading(false);
+    }
   }
 
   function goSignup(e) {
@@ -21,14 +70,18 @@ export default function Login() {
 
   function handleGoogle(e) {
     e.preventDefault();
-    // UI-only placeholder.
+    // Redirect to backend Google OAuth endpoint
+    const nextPath = from || "/upload";
+    window.location.href = `${API_BASE}/api/auth/google/login/?next=${encodeURIComponent(
+      nextPath
+    )}`;
   }
 
   return (
     <AuthShell
       mode="login"
       title="Log in"
-      subtitle="Use your email and password to access your workspace."
+      subtitle="Use your mobile number or email and password to access your workspace."
     >
       <form className="authForm" onSubmit={handleSubmit}>
         <button className="btnSocial" type="button" onClick={handleGoogle}>
@@ -57,14 +110,14 @@ export default function Login() {
               />
             </svg>
           </span>
-          Continue with Google
+          <span>Continue with Google</span>
         </button>
 
         <div className="authDivider" role="presentation">
           <span>or</span>
         </div>
 
-        <label className="field" htmlFor="login-email">
+        <label className="field" htmlFor="login-identifier">
           <span className="fieldIcon" aria-hidden="true">
             <svg
               width="18"
@@ -88,16 +141,16 @@ export default function Login() {
             </svg>
           </span>
           <input
-            id="login-email"
+            id="login-identifier"
             className="fieldInput"
-            type="email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
+            type="text"
+            value={identifier}
+            onChange={(e) => setIdentifier(e.target.value)}
             placeholder=" "
-            autoComplete="email"
+            autoComplete="username"
             required
           />
-          <span className="fieldLabel">Email</span>
+          <span className="fieldLabel">Mobile or Email</span>
           <span className="fieldUnderline" aria-hidden="true" />
         </label>
 
@@ -144,34 +197,30 @@ export default function Login() {
         </label>
 
         <div className="authRow">
-          <label className="authCheck">
-            <input
-              type="checkbox"
-              checked={rememberMe}
-              onChange={(e) => setRememberMe(e.target.checked)}
-            />
-            <span>Remember me</span>
-          </label>
-
-          <Link to="/support" className="textLink authForgot">
-            Forgot password?
-          </Link>
+          <span className="authHint">Log in to continue to upload.</span>
         </div>
 
-        <button className="btnPrimary" type="submit">
-          Log In
-        </button>
+        {oauthHint ? (
+          <div className="authError" role="alert">
+            {oauthHint}
+          </div>
+        ) : null}
 
-        <p className="authHint">
-          Note: authentication is UI-only right now; this continues to the
-          upload page.
-        </p>
+        {error ? (
+          <div className="authError" role="alert">
+            {error}
+          </div>
+        ) : null}
+
+        <button className="btnPrimary" type="submit">
+          {loading ? "Logging in…" : "Log In"}
+        </button>
 
         <p className="authAlt">
           New to Synopsis?{" "}
-          <Link to="/signup" className="textLink" onClick={goSignup}>
+          <a href="#signup" className="textLink" onClick={goSignup}>
             Create an account
-          </Link>
+          </a>
         </p>
       </form>
     </AuthShell>

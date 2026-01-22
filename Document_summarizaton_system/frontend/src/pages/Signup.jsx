@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import AuthShell from "../components/AuthShell";
+import { API_BASE } from "../lib/auth";
 
 export default function Signup() {
   const navigate = useNavigate();
@@ -12,6 +13,8 @@ export default function Signup() {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
   const [touched, setTouched] = useState({
     email: false,
     confirmPassword: false,
@@ -22,21 +25,43 @@ export default function Signup() {
   const showEmailError = touched.email && !isEmailValid;
   const showConfirmError = touched.confirmPassword && !isConfirmMatch;
 
-  function handleSubmit(e) {
+  async function handleSubmit(e) {
     e.preventDefault();
     if (!isEmailValid || !isConfirmMatch) return;
-    // UI-first: navigate to the tool page (backend auth not implemented).
-    navigate("/upload");
-  }
+    setError("");
+    setLoading(true);
 
-  function goLogin(e) {
-    e.preventDefault();
-    navigate("/login");
+    try {
+      const res = await fetch(`${API_BASE}/api/auth/signup/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          firstName,
+          lastName,
+          mobile,
+          email,
+          password,
+        }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.ok) {
+        setError(data?.error || "Signup failed.");
+        return;
+      }
+      navigate("/login", { replace: true });
+    } catch (e2) {
+      setError(e2?.message || "Signup failed.");
+    } finally {
+      setLoading(false);
+    }
   }
 
   function handleGoogle(e) {
-    e.preventDefault();
-    // UI-only placeholder.
+    e?.preventDefault();
+    // Redirect to backend Google OAuth endpoint
+    window.location.href = `${API_BASE}/api/auth/google/login/?next=/upload`;
   }
 
   return (
@@ -353,12 +378,18 @@ export default function Signup() {
         </label>
 
         <button className="btnPrimary" type="submit">
-          Create Account
+          {loading ? "Creating…" : "Create account"}
         </button>
+
+        {error ? (
+          <p className="authHint" role="alert" style={{ color: "#ffd2c7" }}>
+            {error}
+          </p>
+        ) : null}
 
         <p className="authAlt">
           Already have an account?{" "}
-          <Link to="/login" className="textLink" onClick={goLogin}>
+          <Link to="/login" className="textLink">
             Log in
           </Link>
         </p>

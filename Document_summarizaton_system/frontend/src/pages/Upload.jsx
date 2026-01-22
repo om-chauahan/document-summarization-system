@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { SiteFooter, SiteHeader } from "../components/SiteChrome";
+import { API_BASE } from "../lib/auth";
+import { fetchMe, getStoredUser, storeUser } from "../lib/userSession";
 
 function renderStructuredSummary(text) {
   const src = (text || "").trim();
@@ -67,16 +69,42 @@ export default function Upload() {
   const loadingTimerRef = useRef(null);
   const typingStartTimeoutRef = useRef(null);
   const [file, setFile] = useState(null);
+  const [credits, setCredits] = useState(() => {
+    const u = getStoredUser();
+    return typeof u?.credits === "number" ? u.credits : null;
+  });
   const [summary, setSummary] = useState("");
   const [displaySummary, setDisplaySummary] = useState("");
+  const [summaryTitle, setSummaryTitle] = useState("AI Summary");
   const [loadingText, setLoadingText] = useState("");
   const [extractedText, setExtractedText] = useState("");
+  const [extractedTextLength, setExtractedTextLength] = useState(null);
   const [isSummaryOpen, setIsSummaryOpen] = useState(true);
   const [isExtractedOpen, setIsExtractedOpen] = useState(false);
   const [status, setStatus] = useState("idle"); // idle | loading | done | error
   const [error, setError] = useState("");
   const [copiedSummary, setCopiedSummary] = useState(false);
   const [copiedExtracted, setCopiedExtracted] = useState(false);
+
+  // Refresh credits from backend session (if logged in).
+  useEffect(() => {
+    let mounted = true;
+    fetchMe()
+      .then((me) => {
+        if (!mounted) return;
+        if (me && typeof me.credits === "number") {
+          setCredits(me.credits);
+          storeUser(me);
+        }
+      })
+      .catch(() => {
+        // ignore
+      });
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   // Clean up any running typing animation timer.
   useEffect(() => {
@@ -205,7 +233,7 @@ export default function Upload() {
       const dynamic = Math.floor(remaining / 120);
       const chunk = Math.min(
         remaining,
-        Math.max(minChunk, Math.min(maxChunk, dynamic))
+        Math.max(minChunk, Math.min(maxChunk, dynamic)),
       );
       i += chunk;
       setDisplaySummary(summary.slice(0, i));
@@ -225,6 +253,19 @@ export default function Upload() {
     return `${file.name} • ${(file.size / 1024 / 1024).toFixed(2)} MB`;
   }, [file]);
 
+  const extractedBytes = useMemo(() => {
+    if (!extractedText) return 0;
+    try {
+      return new TextEncoder().encode(extractedText).length;
+    } catch {
+      try {
+        return new Blob([extractedText]).size;
+      } catch {
+        return 0;
+      }
+    }
+  }, [extractedText]);
+
   async function handleSummarize(e) {
     e.preventDefault();
     if (!file) return;
@@ -234,6 +275,7 @@ export default function Upload() {
     setSummary("");
     setDisplaySummary("");
     setExtractedText("");
+    setExtractedTextLength(null);
 
     if (typingTimerRef.current) {
       clearInterval(typingTimerRef.current);
@@ -253,23 +295,62 @@ export default function Upload() {
       formData.append("file", file);
 
       // Django endpoint (non-streaming)
-      const res = await fetch("http://127.0.0.1:8000/api/summarize/", {
+      const res = await fetch(`${API_BASE}/api/summarize/`, {
         method: "POST",
+        credentials: "include",
         body: formData,
       });
 
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || "Failed to summarize");
 
+      // Update credits (backend may return `credits` or `credits_remaining`).
+      const nextCredits =
+        typeof data?.credits === "number"
+          ? data.credits
+          : typeof data?.credits_remaining === "number"
+            ? data.credits_remaining
+            : null;
+      if (typeof nextCredits === "number") {
+        setCredits(nextCredits);
+        const existing = getStoredUser();
+        if (existing) {
+          storeUser({ ...existing, credits: nextCredits });
+        }
+      }
+
+      // As a source-of-truth, refresh credits from the session after summarization.
+      // This guarantees the UI updates even if the API response shape changes.
+      fetchMe()
+        .then((me) => {
+          if (me && typeof me.credits === "number") {
+            setCredits(me.credits);
+            storeUser(me);
+          }
+        })
+        .catch(() => {
+          // ignore
+        });
+
       // Scroll FIRST (after a tiny delay), then set summary so the typing effect starts
       // when the user is already looking at the results.
       setDisplaySummary("");
       setExtractedText(data.extracted_text || "");
+      setExtractedTextLength(
+        typeof data.extracted_text_length === "number"
+          ? data.extracted_text_length
+          : null,
+      );
       setIsSummaryOpen(true);
       setIsExtractedOpen(false);
       setStatus("done");
       setCopiedSummary(false);
       setCopiedExtracted(false);
+
+      const resultKind = data?.result_kind || "";
+      setSummaryTitle(
+        resultKind === "image_description" ? "Image Description" : "AI Summary",
+      );
 
       requestAnimationFrame(() => {
         // Small delay before scrolling so the user perceives "summary is ready".
@@ -281,7 +362,13 @@ export default function Upload() {
 
           // Start typing shortly after scroll begins.
           typingStartTimeoutRef.current = setTimeout(() => {
-            setSummary(data.summary || "");
+            const finalText =
+              (data && typeof data.summary === "string" && data.summary) ||
+              (data &&
+                typeof data.image_description === "string" &&
+                data.image_description) ||
+              "";
+            setSummary(finalText);
             typingStartTimeoutRef.current = null;
           }, 450);
         }, 250);
@@ -330,8 +417,8 @@ export default function Upload() {
                       {status === "loading"
                         ? "Processing your document..."
                         : file
-                        ? file.name
-                        : "Choose file to upload"}
+                          ? file.name
+                          : "Choose file to upload"}
                     </div>
                     <div className="fileUploadHint">{fileHint}</div>
                   </div>
@@ -342,6 +429,22 @@ export default function Upload() {
                 <button className="btnSubmit" type="submit" disabled={!file}>
                   Generate Summary
                 </button>
+              )}
+
+              {status !== "loading" && (
+                <div className="uploadMetaRow" aria-label="Usage details">
+                  <div className="uploadMetaItem">
+                    Credits: {typeof credits === "number" ? credits : "—"}
+                  </div>
+                  {status === "done" && extractedText ? (
+                    <div className="uploadMetaItem">
+                      Extracted: {extractedTextLength ?? extractedText.length}{" "}
+                      chars
+                      {" • "}
+                      {extractedBytes.toLocaleString()} bytes
+                    </div>
+                  ) : null}
+                </div>
               )}
 
               {status === "loading" && (
@@ -444,10 +547,16 @@ export default function Upload() {
             aria-label="Extracted summary"
           >
             <div className="resultsInner">
+              <div className="uploadMetaRow" aria-label="Credits remaining">
+                <div className="uploadMetaItem">
+                  Credits: {typeof credits === "number" ? credits : "—"}
+                </div>
+              </div>
+
               {summary && (
                 <div className="summaryPanel summaryPanelLarge">
                   <div className="summaryPanelHeader">
-                    <h3 className="summaryPanelTitle">AI Summary</h3>
+                    <h3 className="summaryPanelTitle">{summaryTitle}</h3>
                     <div className="summaryPanelActions">
                       <button
                         type="button"

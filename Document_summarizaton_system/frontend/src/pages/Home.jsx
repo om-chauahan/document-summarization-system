@@ -1,7 +1,31 @@
-import { Link } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { SiteFooter, SiteHeader } from "../components/SiteChrome";
+import { fetchMe, getStoredUser, storeUser } from "../lib/userSession";
 
 export default function Home() {
+  const navigate = useNavigate();
+
+  async function handleGetStarted(e) {
+    e.preventDefault();
+
+    // Fast path: if we already have a stored user, assume logged-in.
+    const stored = getStoredUser();
+    if (stored) {
+      navigate("/upload");
+      return;
+    }
+
+    // Slow path: ask the backend if a valid session exists.
+    const me = await fetchMe().catch(() => null);
+    if (me) {
+      storeUser(me);
+      navigate("/upload");
+      return;
+    }
+
+    navigate("/login");
+  }
+
   return (
     <div className="page">
       <SiteHeader />
@@ -20,13 +44,14 @@ export default function Home() {
             </p>
 
             <div className="heroActions">
-              <Link
-                to="/signup"
+              <a
+                href="/login"
                 className="btnDemoLarge"
                 style={{ textDecoration: "none", display: "inline-block" }}
+                onClick={handleGetStarted}
               >
                 Get started free
-              </Link>
+              </a>
             </div>
 
             <p className="heroSubtext">get started with free tools.</p>
