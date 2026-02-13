@@ -338,7 +338,7 @@ export default function Profile() {
                     disabled={!editing}
                     required
                   />
-                  <span className="fieldLabel">Mobile Number</span>
+                  <span className="fieldLabel">Mobile Number OR Username</span>
                   <span className="fieldUnderline" aria-hidden="true" />
                 </label>
               </div>

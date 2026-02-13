@@ -74,12 +74,34 @@ This project supports a **server-side Google OAuth** flow (Authorization Code) u
 
 Set these before running Django (either export them in your shell or copy `.env.example` → `.env` and fill it in):
 
-```bash
+````bash
 export DSS_GOOGLE_CLIENT_ID="<your-client-id>"
 export DSS_GOOGLE_CLIENT_SECRET="<your-client-secret>"
 export DSS_GOOGLE_REDIRECT_URI="http://127.0.0.1:8000/api/auth/google/callback/"
 export DSS_FRONTEND_BASE="http://localhost:5173"
-```
+
+### OTP email delivery (SMTP)
+
+The **OTP change-password** flow sends OTPs via email. To receive real emails (instead of seeing them printed in the Django terminal), configure SMTP in `.env` (copy `.env.example` → `.env`).
+
+Gmail (dev-friendly) example:
+
+```bash
+export EMAIL_HOST="smtp.gmail.com"
+export EMAIL_PORT="587"
+export EMAIL_USE_TLS="1"
+export EMAIL_HOST_USER="your_email@gmail.com"
+export EMAIL_HOST_PASSWORD="your_google_app_password"
+export DEFAULT_FROM_EMAIL="your_email@gmail.com"
+export DEFAULT_FROM_NAME="Document Summarization System"
+````
+
+Notes:
+
+- Gmail requires a Google **App Password** (enable 2-Step Verification first).
+- Restart `python3 manage.py runserver` after changing `.env`.
+
+````
 
 #### 3) Use it in the UI
 
@@ -105,4 +127,4 @@ git status
 git add .
 git commit -m "A descriptive commit message"
 git push origin main
-```
+````

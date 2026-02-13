@@ -9,6 +9,8 @@ from django.utils import timezone
 from django.core.validators import validate_email
 from django.core.exceptions import ValidationError
 from django.conf import settings
+from django.core.cache import cache
+from django.core.mail import send_mail
 from typing import Optional
 import io
 import json
@@ -18,6 +20,7 @@ import shutil
 import re
 import secrets
 import urllib.parse
+import hashlib
 
 from .models import StoredDocument, UserCredits, RazorpayTopupOrder
 
@@ -126,7 +129,32 @@ def login_user(request):
     if not identifier or not password:
         return JsonResponse({"ok": False, "error": "Missing credentials."}, status=400)
 
-    user = authenticate(request, username=identifier, password=password)
+    # Allow login with either:
+    # - username (mobile)
+    # - email (we look up the corresponding username)
+    candidates: list[str] = []
+    if _looks_like_email(identifier):
+        user_by_email = User.objects.filter(email__iexact=identifier).only("username").first()
+        if user_by_email and user_by_email.username:
+            candidates.append(user_by_email.username)
+        candidates.append(identifier)
+    else:
+        normalized_mobile = _normalize_mobile(identifier)
+        if normalized_mobile and normalized_mobile != identifier:
+            candidates.append(normalized_mobile)
+        candidates.append(identifier)
+
+    user = None
+    seen: set[str] = set()
+    for cand in candidates:
+        cand = (cand or "").strip()
+        if not cand or cand in seen:
+            continue
+        seen.add(cand)
+        user = authenticate(request, username=cand, password=password)
+        if user is not None:
+            break
+
     if user is None:
         return JsonResponse({"ok": False, "error": "Invalid credentials."}, status=401)
 
@@ -139,6 +167,7 @@ def login_user(request):
     )
 
 
+@csrf_exempt
 @require_http_methods(["POST", "OPTIONS"])
 def signup_user(request):
     if request.method == "OPTIONS":
@@ -151,7 +180,8 @@ def signup_user(request):
     email = (data.get("email") or "").strip()
     password = data.get("password") or ""
 
-    if not mobile:
+    mobile_norm = _normalize_mobile(mobile)
+    if not mobile_norm:
         return JsonResponse({"ok": False, "error": "Mobile is required."}, status=400)
     if not email:
         return JsonResponse({"ok": False, "error": "Email is required."}, status=400)
@@ -162,7 +192,7 @@ def signup_user(request):
     if not password:
         return JsonResponse({"ok": False, "error": "Password is required."}, status=400)
 
-    username = mobile
+    username = mobile_norm
     if User.objects.filter(username=username).exists():
         return JsonResponse({"ok": False, "error": "Mobile already registered."}, status=409)
     if User.objects.filter(email__iexact=email).exists():
@@ -742,6 +772,165 @@ def change_password(request):
     user.save()
 
     # Re-login the user with new password
+    dj_login(request, user)
+
+    response = JsonResponse({"ok": True, "message": "Password changed successfully."})
+    return add_cors_headers(response, request)
+
+
+def _pw_otp_cache_key(user_id: int) -> str:
+    return f"dss:pw_otp:{user_id}"
+
+
+def _hash_otp(code: str) -> str:
+    raw = f"{settings.SECRET_KEY}|{code}".encode("utf-8", errors="ignore")
+    return hashlib.sha256(raw).hexdigest()
+
+
+@csrf_exempt
+@require_http_methods(["POST", "OPTIONS"])
+def request_change_password_otp(request):
+    """Send an OTP to the logged-in user's email to change password.
+
+    This is used when the user doesn't remember their current password.
+    """
+
+    if request.method == "OPTIONS":
+        response = JsonResponse({"ok": True})
+        return add_cors_headers(response, request)
+
+    user = getattr(request, "user", None)
+    if not user or not user.is_authenticated:
+        response = JsonResponse({"ok": False, "error": "Not authenticated."}, status=401)
+        return add_cors_headers(response, request)
+
+    email = (getattr(user, "email", "") or "").strip()
+    if not email:
+        response = JsonResponse({"ok": False, "error": "No email is set on your account. Update your profile email first."}, status=400)
+        return add_cors_headers(response, request)
+
+    try:
+        validate_email(email)
+    except ValidationError:
+        response = JsonResponse({"ok": False, "error": "Your account email is invalid. Update it in profile first."}, status=400)
+        return add_cors_headers(response, request)
+
+    now = timezone.now()
+    key = _pw_otp_cache_key(user.id)
+    existing = cache.get(key)
+
+    cooldown_s = int(os.environ.get("DSS_PW_OTP_COOLDOWN_SECONDS", "60"))
+    ttl_s = int(os.environ.get("DSS_PW_OTP_TTL_SECONDS", "600"))
+
+    if isinstance(existing, dict):
+        sent_at_iso = existing.get("sent_at")
+        try:
+            sent_at = timezone.datetime.fromisoformat(sent_at_iso) if sent_at_iso else None
+            if sent_at is not None and sent_at.tzinfo is None:
+                sent_at = sent_at.replace(tzinfo=timezone.get_current_timezone())
+        except Exception:
+            sent_at = None
+
+        if sent_at is not None:
+            age = (now - sent_at).total_seconds()
+            if age < cooldown_s:
+                response = JsonResponse({"ok": True, "message": "OTP already sent. Please check your email."})
+                return add_cors_headers(response, request)
+
+    otp = f"{secrets.randbelow(1_000_000):06d}"
+    record = {
+        "otp_hash": _hash_otp(otp),
+        "sent_at": now.isoformat(),
+        "attempts": 0,
+    }
+    cache.set(key, record, timeout=ttl_s)
+
+    subject = "Your OTP to change password"
+    minutes = max(1, ttl_s // 60)
+    body = (
+        f"Your OTP to change your password is: {otp}\n\n"
+        f"This code expires in {minutes} minute(s). If you did not request this, ignore this email."
+    )
+
+    from_email = getattr(settings, "DEFAULT_FROM_EMAIL", "") or os.environ.get("DSS_FROM_EMAIL", "no-reply@example.com")
+    try:
+        send_mail(subject, body, from_email, [email], fail_silently=False)
+    except Exception as e:
+        # In local dev, it's common to not have SMTP configured. If DEBUG is on,
+        # keep the OTP in cache and optionally echo it to the client.
+        if getattr(settings, "DEBUG", False):
+            payload = {
+                "ok": True,
+                "message": "OTP generated, but email delivery failed in this environment. Configure SMTP or use console email backend.",
+            }
+            if os.environ.get("DSS_OTP_ECHO", "0") == "1":
+                payload["otp"] = otp
+            response = JsonResponse(payload)
+            return add_cors_headers(response, request)
+
+        # Production behavior: don't leave a valid OTP around if we couldn't deliver it.
+        cache.delete(key)
+        response = JsonResponse({"ok": False, "error": f"Failed to send OTP email: {str(e)}"}, status=502)
+        return add_cors_headers(response, request)
+
+    resp_payload = {"ok": True, "message": "OTP sent to your email."}
+    # Optional dev helper to avoid needing a real SMTP when testing locally.
+    if getattr(settings, "DEBUG", False) and os.environ.get("DSS_OTP_ECHO", "0") == "1":
+        resp_payload["otp"] = otp
+
+    response = JsonResponse(resp_payload)
+    return add_cors_headers(response, request)
+
+
+@csrf_exempt
+@require_http_methods(["POST", "OPTIONS"])
+def verify_change_password_otp(request):
+    """Verify OTP and set a new password for the logged-in user."""
+
+    if request.method == "OPTIONS":
+        response = JsonResponse({"ok": True})
+        return add_cors_headers(response, request)
+
+    user = getattr(request, "user", None)
+    if not user or not user.is_authenticated:
+        response = JsonResponse({"ok": False, "error": "Not authenticated."}, status=401)
+        return add_cors_headers(response, request)
+
+    data = _get_json_body(request)
+    otp = (data.get("otp") or "").strip()
+    new_password = data.get("new_password") or ""
+    if not otp or not new_password:
+        response = JsonResponse({"ok": False, "error": "OTP and new password are required."}, status=400)
+        return add_cors_headers(response, request)
+
+    password_error = _validate_password(new_password)
+    if password_error:
+        response = JsonResponse({"ok": False, "error": password_error}, status=400)
+        return add_cors_headers(response, request)
+
+    key = _pw_otp_cache_key(user.id)
+    record = cache.get(key)
+    if not isinstance(record, dict) or not record.get("otp_hash"):
+        response = JsonResponse({"ok": False, "error": "OTP expired. Please request a new OTP."}, status=400)
+        return add_cors_headers(response, request)
+
+    max_attempts = int(os.environ.get("DSS_PW_OTP_MAX_ATTEMPTS", "5"))
+    attempts = int(record.get("attempts") or 0)
+    if attempts >= max_attempts:
+        cache.delete(key)
+        response = JsonResponse({"ok": False, "error": "Too many incorrect attempts. Please request a new OTP."}, status=429)
+        return add_cors_headers(response, request)
+
+    if _hash_otp(otp) != record.get("otp_hash"):
+        record["attempts"] = attempts + 1
+        cache.set(key, record, timeout=int(os.environ.get("DSS_PW_OTP_TTL_SECONDS", "600")))
+        response = JsonResponse({"ok": False, "error": "Invalid OTP."}, status=401)
+        return add_cors_headers(response, request)
+
+    # OTP correct: change password
+    cache.delete(key)
+    user.set_password(new_password)
+    user.save()
     dj_login(request, user)
 
     response = JsonResponse({"ok": True, "message": "Password changed successfully."})

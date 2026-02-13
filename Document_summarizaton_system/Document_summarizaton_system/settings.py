@@ -12,35 +12,36 @@ https://docs.djangoproject.com/en/4.2/ref/settings/
 
 import os
 from pathlib import Path
+from email.utils import formataddr
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 # Optional: load environment variables from a local .env file.
-# We keep this best-effort so production deployments can use real env vars.
-try:  # pragma: no cover
-    from dotenv import load_dotenv
+# This should work even if python-dotenv isn't installed.
+env_path = BASE_DIR / ".env"
+if env_path.exists():
+    # Prefer python-dotenv if present.
+    try:  # pragma: no cover
+        from dotenv import load_dotenv
 
-    # Load .env file from the project root (where manage.py is located)
-    env_path = BASE_DIR / ".env"
-    if env_path.exists():
         load_dotenv(env_path, override=True)
-        # Also manually parse .env file as fallback if dotenv doesn't work
-        try:
-            with open(env_path, 'r') as f:
-                for line in f:
-                    line = line.strip()
-                    if line and not line.startswith('#') and '=' in line:
-                        key, value = line.split('=', 1)
-                        key = key.strip()
-                        value = value.strip().strip('"').strip("'")
-                        if key and value and key not in os.environ:
-                            os.environ[key] = value
-        except Exception:
-            pass
-except Exception:
-    # Silently fail - dotenv is optional, we'll read .env file directly in views if needed
-    pass
+    except Exception:
+        pass
+
+    # Always do a simple manual parse as a fallback.
+    try:  # pragma: no cover
+        with open(env_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, value = line.split("=", 1)
+                    key = key.strip()
+                    value = value.strip().strip('"').strip("'")
+                    if key and key not in os.environ:
+                        os.environ[key] = value
+    except Exception:
+        pass
 
 
 # Quick-start development settings - unsuitable for production
@@ -67,6 +68,12 @@ SESSION_COOKIE_HTTPONLY = True
 # but keep this aligned for any future non-exempt endpoints.
 CSRF_COOKIE_SAMESITE = "None"
 CSRF_COOKIE_SECURE = False
+
+# Allow CSRF Origin checks for the Vite dev server.
+CSRF_TRUSTED_ORIGINS = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
 
 
 # Application definition
@@ -216,3 +223,41 @@ DSS_FRONTEND_BASE = os.getenv("DSS_FRONTEND_BASE", "http://localhost:5173")
 # In local dev, you can set these in a .env file at the project root.
 DSS_RAZORPAY_KEY_ID = os.getenv("DSS_RAZORPAY_KEY_ID", "").strip()
 DSS_RAZORPAY_KEY_SECRET = os.getenv("DSS_RAZORPAY_KEY_SECRET", "").strip()
+
+# --- Email (OTP delivery) ---
+# If SMTP isn't configured, Django defaults to localhost:25 which usually fails.
+# For real-world delivery (even locally), set EMAIL_HOST/EMAIL_HOST_USER/EMAIL_HOST_PASSWORD.
+
+# SMTP settings
+EMAIL_HOST = (os.getenv("EMAIL_HOST", "localhost") or "localhost").strip()
+EMAIL_PORT = int(os.getenv("EMAIL_PORT", "25") or 25)
+EMAIL_HOST_USER = (os.getenv("EMAIL_HOST_USER", "") or "").strip()
+EMAIL_HOST_PASSWORD = (os.getenv("EMAIL_HOST_PASSWORD", "") or "").strip()
+EMAIL_USE_TLS = (os.getenv("EMAIL_USE_TLS", "0") == "1")
+EMAIL_USE_SSL = (os.getenv("EMAIL_USE_SSL", "0") == "1")
+EMAIL_TIMEOUT = int(os.getenv("EMAIL_TIMEOUT", "10") or 10)
+
+_from_email_addr = (
+    os.getenv("DEFAULT_FROM_EMAIL", "")
+    or os.getenv("DSS_FROM_EMAIL", "no-reply@example.com")
+).strip()
+_from_email_name = (os.getenv("DEFAULT_FROM_NAME", "") or os.getenv("DSS_FROM_NAME", "")).strip()
+
+# Allow "Display Name <email@domain>". If only an address is provided but a name
+# is available, format it.
+if _from_email_name and _from_email_addr and "<" not in _from_email_addr:
+    DEFAULT_FROM_EMAIL = formataddr((_from_email_name, _from_email_addr))
+else:
+    DEFAULT_FROM_EMAIL = _from_email_addr
+
+# Backend selection:
+# - If EMAIL_BACKEND env var is provided, respect it.
+# - Else if SMTP creds are provided, use SMTP backend (even when DEBUG=True).
+# - Else in DEBUG, use console backend so you can still test flows.
+EMAIL_BACKEND = (os.getenv("EMAIL_BACKEND", "") or "").strip()
+if not EMAIL_BACKEND:
+    has_smtp_creds = bool(EMAIL_HOST_USER and EMAIL_HOST_PASSWORD)
+    if has_smtp_creds:
+        EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
+    else:
+        EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend" if DEBUG else "django.core.mail.backends.smtp.EmailBackend"

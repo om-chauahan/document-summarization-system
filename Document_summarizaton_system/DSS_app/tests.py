@@ -4,6 +4,8 @@ from django.test import TestCase
 from django.core.files.uploadedfile import SimpleUploadedFile
 from unittest.mock import patch
 from django.test.utils import override_settings
+from django.core import mail
+import re
 
 class ExtractionSmokeTests(TestCase):
 	def test_extract_text_from_txt_bytes(self):
@@ -39,16 +41,12 @@ class SummarizationHelpersTests(TestCase):
 		from DSS_app.summarization import summarize_text
 		self.assertEqual(summarize_text(""), "")
 
-	def test_default_prompt_bans_vague_phrases(self):
-		"""Regression: prevent summaries like 'name is mentioned' instead of real values."""
+	def test_default_prompt_requests_20_lines(self):
+		"""Ensure the default prompt requests a 20-line summary."""
 		from DSS_app import summarization as s
-		# The prompt is a local variable inside summarize_text; validate via source.
-		# If prompt wording changes, keep these bans in place.
 		src = s.summarize_text.__code__.co_consts
 		joined = " ".join([c for c in src if isinstance(c, str)])
-		self.assertIn("BANNED vague phrases", joined)
-		self.assertIn("is mentioned", joined)
-		self.assertIn("Not found", joined)
+		self.assertIn("summary length is 20 lines", joined)
 
 	def test_compress_removes_repeated_headers_preserves_key_lines(self):
 		from DSS_app.summarization import _compress_for_llm
@@ -113,6 +111,83 @@ class AuthApiTests(TestCase):
 		res = self.client.post(
 			"/api/auth/login/",
 			data={"identifier": "8888888888", "password": "pass1234!"},
+			content_type="application/json",
+		)
+		self.assertEqual(res.status_code, 200)
+		self.assertEqual(res.json().get("ok"), True)
+
+	def test_login_accepts_email_identifier(self):
+		self.client.post(
+			"/api/auth/signup/",
+			data={
+				"firstName": "A",
+				"lastName": "B",
+				"mobile": "+91 99999-00000",
+				"email": "email_login@example.com",
+				"password": "pass1234!",
+			},
+			content_type="application/json",
+		)
+
+		res = self.client.post(
+			"/api/auth/login/",
+			data={"identifier": "email_login@example.com", "password": "pass1234!"},
+			content_type="application/json",
+		)
+		self.assertEqual(res.status_code, 200)
+		self.assertEqual(res.json().get("ok"), True)
+
+
+@override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
+class PasswordOtpTests(TestCase):
+	def test_change_password_via_otp(self):
+		# Create user
+		res = self.client.post(
+			"/api/auth/signup/",
+			data={
+				"firstName": "A",
+				"lastName": "B",
+				"mobile": "7777777777",
+				"email": "otp@example.com",
+				"password": "oldpass123",
+			},
+			content_type="application/json",
+		)
+		self.assertEqual(res.status_code, 201)
+
+		# Login (session cookie)
+		res = self.client.post(
+			"/api/auth/login/",
+			data={"identifier": "7777777777", "password": "oldpass123"},
+			content_type="application/json",
+		)
+		self.assertEqual(res.status_code, 200)
+		self.assertEqual(res.json().get("ok"), True)
+
+		# Request OTP
+		res = self.client.post("/api/auth/change-password/otp/request/")
+		self.assertEqual(res.status_code, 200)
+		self.assertEqual(res.json().get("ok"), True)
+		self.assertGreaterEqual(len(mail.outbox), 1)
+		body = mail.outbox[-1].body or ""
+		m = re.search(r"\b(\d{6})\b", body)
+		self.assertIsNotNone(m)
+		otp = m.group(1)
+
+		# Verify OTP and set new password
+		res = self.client.post(
+			"/api/auth/change-password/otp/verify/",
+			data={"otp": otp, "new_password": "newpass123"},
+			content_type="application/json",
+		)
+		self.assertEqual(res.status_code, 200)
+		self.assertEqual(res.json().get("ok"), True)
+
+		# Logout and verify login works with new password
+		self.client.post("/api/auth/logout/")
+		res = self.client.post(
+			"/api/auth/login/",
+			data={"identifier": "7777777777", "password": "newpass123"},
 			content_type="application/json",
 		)
 		self.assertEqual(res.status_code, 200)

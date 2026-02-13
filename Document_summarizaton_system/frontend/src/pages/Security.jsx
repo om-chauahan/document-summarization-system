@@ -7,8 +7,12 @@ import { fetchMe, getStoredUser } from "../lib/userSession";
 export default function Security() {
   const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
+  const [otpSending, setOtpSending] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  const [mode, setMode] = useState("password"); // password | otp
+  const [otpSent, setOtpSent] = useState(false);
+  const [otp, setOtp] = useState("");
   const [showCurrentPassword, setShowCurrentPassword] = useState(false);
   const [showNewPassword, setShowNewPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
@@ -36,6 +40,50 @@ export default function Security() {
     setSuccess("");
   }
 
+  function switchToOtp() {
+    setMode("otp");
+    setOtpSent(false);
+    setOtp("");
+    setFormData((prev) => ({ ...prev, current_password: "" }));
+    setError("");
+    setSuccess("");
+  }
+
+  function switchToPassword() {
+    setMode("password");
+    setOtpSent(false);
+    setOtp("");
+    setError("");
+    setSuccess("");
+  }
+
+  async function handleSendOtp() {
+    setError("");
+    setSuccess("");
+    setOtpSending(true);
+    try {
+      const res = await fetch(
+        `${API_BASE}/api/auth/change-password/otp/request/`,
+        {
+          method: "POST",
+          credentials: "include",
+        },
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.ok) {
+        setError(data?.error || "Failed to send OTP.");
+        return;
+      }
+      setOtpSent(true);
+      setSuccess("OTP sent to your email. Please enter it below.");
+      setTimeout(() => setSuccess(""), 4000);
+    } catch (err) {
+      setError(err?.message || "Failed to send OTP.");
+    } finally {
+      setOtpSending(false);
+    }
+  }
+
   async function handleSubmit(e) {
     e.preventDefault();
     setError("");
@@ -54,14 +102,33 @@ export default function Security() {
     setLoading(true);
 
     try {
-      const res = await fetch(`${API_BASE}/api/auth/change-password/`, {
+      const url =
+        mode === "otp"
+          ? `${API_BASE}/api/auth/change-password/otp/verify/`
+          : `${API_BASE}/api/auth/change-password/`;
+
+      const payload =
+        mode === "otp"
+          ? {
+              otp: otp.trim(),
+              new_password: formData.new_password,
+            }
+          : {
+              current_password: formData.current_password,
+              new_password: formData.new_password,
+            };
+
+      if (mode === "otp" && !payload.otp) {
+        setError("OTP is required.");
+        setLoading(false);
+        return;
+      }
+
+      const res = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({
-          current_password: formData.current_password,
-          new_password: formData.new_password,
-        }),
+        body: JSON.stringify(payload),
       });
 
       const data = await res.json().catch(() => ({}));
@@ -77,6 +144,9 @@ export default function Security() {
         new_password: "",
         confirm_password: "",
       });
+      setOtp("");
+      setOtpSent(false);
+      setMode("password");
       setTimeout(() => setSuccess(""), 3000);
     } catch (err) {
       setError(err?.message || "Failed to change password.");
@@ -124,56 +194,140 @@ export default function Security() {
               ) : null}
 
               <form onSubmit={handleSubmit} className="securityForm">
-                <label className="field securityField">
-                  <span className="fieldIcon" aria-hidden="true">
-                    <svg
-                      width="18"
-                      height="18"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      xmlns="http://www.w3.org/2000/svg"
+                {mode === "password" ? (
+                  <label className="field securityField">
+                    <span className="fieldIcon" aria-hidden="true">
+                      <svg
+                        width="18"
+                        height="18"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        xmlns="http://www.w3.org/2000/svg"
+                      >
+                        <path
+                          d="M7.5 10V8.4C7.5 5.9706 9.4706 4 11.9 4H12.1C14.5294 4 16.5 5.9706 16.5 8.4V10"
+                          stroke="currentColor"
+                          strokeWidth="1.7"
+                          strokeLinecap="round"
+                        />
+                        <path
+                          d="M6.5 10H17.5C18.8807 10 20 11.1193 20 12.5V17.5C20 18.8807 18.8807 20 17.5 20H6.5C5.11929 20 4 18.8807 4 17.5V12.5C4 11.1193 5.11929 10 6.5 10Z"
+                          stroke="currentColor"
+                          strokeWidth="1.7"
+                        />
+                        <path
+                          d="M12 14V16"
+                          stroke="currentColor"
+                          strokeWidth="1.7"
+                          strokeLinecap="round"
+                        />
+                      </svg>
+                    </span>
+                    <input
+                      className="fieldInput"
+                      type={showCurrentPassword ? "text" : "password"}
+                      name="current_password"
+                      value={formData.current_password}
+                      onChange={handleChange}
+                      placeholder=" "
+                      required
+                    />
+                    <button
+                      type="button"
+                      className="fieldToggle"
+                      aria-label={
+                        showCurrentPassword ? "Hide password" : "Show password"
+                      }
+                      onClick={() => setShowCurrentPassword((s) => !s)}
                     >
-                      <path
-                        d="M7.5 10V8.4C7.5 5.9706 9.4706 4 11.9 4H12.1C14.5294 4 16.5 5.9706 16.5 8.4V10"
-                        stroke="currentColor"
-                        strokeWidth="1.7"
-                        strokeLinecap="round"
-                      />
-                      <path
-                        d="M6.5 10H17.5C18.8807 10 20 11.1193 20 12.5V17.5C20 18.8807 18.8807 20 17.5 20H6.5C5.11929 20 4 18.8807 4 17.5V12.5C4 11.1193 5.11929 10 6.5 10Z"
-                        stroke="currentColor"
-                        strokeWidth="1.7"
-                      />
-                      <path
-                        d="M12 14V16"
-                        stroke="currentColor"
-                        strokeWidth="1.7"
-                        strokeLinecap="round"
-                      />
-                    </svg>
-                  </span>
-                  <input
-                    className="fieldInput"
-                    type={showCurrentPassword ? "text" : "password"}
-                    name="current_password"
-                    value={formData.current_password}
-                    onChange={handleChange}
-                    placeholder=" "
-                    required
-                  />
-                  <button
-                    type="button"
-                    className="fieldToggle"
-                    aria-label={
-                      showCurrentPassword ? "Hide password" : "Show password"
-                    }
-                    onClick={() => setShowCurrentPassword((s) => !s)}
-                  >
-                    {showCurrentPassword ? "Hide" : "Show"}
-                  </button>
-                  <span className="fieldLabel">Current Password</span>
-                  <span className="fieldUnderline" aria-hidden="true" />
-                </label>
+                      {showCurrentPassword ? "Hide" : "Show"}
+                    </button>
+                    <span className="fieldLabel">Current Password</span>
+                    <span className="fieldUnderline" aria-hidden="true" />
+                  </label>
+                ) : (
+                  <div style={{ marginTop: 6, marginBottom: 10 }}>
+                    <div className="settingsCardHelp">
+                      Don’t remember your current password? We’ll send an OTP to
+                      your registered email.
+                    </div>
+                    <div style={{ marginTop: 10, display: "flex", gap: 10 }}>
+                      <button
+                        type="button"
+                        className="btnOutline"
+                        disabled={otpSending || loading}
+                        onClick={handleSendOtp}
+                      >
+                        {otpSending ? "Sending OTP…" : "Send OTP"}
+                      </button>
+                      <button
+                        type="button"
+                        className="btnOutline"
+                        disabled={otpSending || loading}
+                        onClick={switchToPassword}
+                      >
+                        Use current password
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {mode === "password" ? (
+                  <div style={{ marginTop: 6, marginBottom: 10 }}>
+                    <button
+                      type="button"
+                      className="textLink"
+                      onClick={switchToOtp}
+                      disabled={loading}
+                    >
+                      Forgot current password? Use OTP
+                    </button>
+                  </div>
+                ) : null}
+
+                {mode === "otp" && otpSent ? (
+                  <label className="field securityField">
+                    <span className="fieldIcon" aria-hidden="true">
+                      <svg
+                        width="18"
+                        height="18"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        xmlns="http://www.w3.org/2000/svg"
+                      >
+                        <path
+                          d="M12 3C7.03 3 3 7.03 3 12C3 16.97 7.03 21 12 21C16.97 21 21 16.97 21 12"
+                          stroke="currentColor"
+                          strokeWidth="1.7"
+                          strokeLinecap="round"
+                        />
+                        <path
+                          d="M12 7V12L15 14"
+                          stroke="currentColor"
+                          strokeWidth="1.7"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      </svg>
+                    </span>
+                    <input
+                      className="fieldInput"
+                      type="text"
+                      inputMode="numeric"
+                      autoComplete="one-time-code"
+                      value={otp}
+                      onChange={(e) => {
+                        setOtp(e.target.value);
+                        setError("");
+                        setSuccess("");
+                      }}
+                      placeholder=" "
+                      required
+                    />
+                    <span className="fieldLabel">OTP</span>
+                    <span className="fieldUnderline" aria-hidden="true" />
+                  </label>
+                ) : null}
 
                 <label className="field securityField">
                   <span className="fieldIcon" aria-hidden="true">
@@ -282,9 +436,15 @@ export default function Security() {
                   <button
                     className="btnPrimary"
                     type="submit"
-                    disabled={loading}
+                    disabled={loading || (mode === "otp" && !otpSent)}
                   >
-                    {loading ? "Updating…" : "Update password"}
+                    {mode === "otp"
+                      ? loading
+                        ? "Verifying…"
+                        : "Verify OTP & set password"
+                      : loading
+                        ? "Updating…"
+                        : "Update password"}
                   </button>
                 </div>
               </form>
