@@ -11,6 +11,7 @@ python-docx==1.2.0
 python-dotenv==1.1.0
 requests==2.32.3
 razorpay==1.4.2
+setuptools==81.0.0
 sqlparse==0.5.4
 typing_extensions==4.15.0
 

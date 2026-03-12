@@ -16,6 +16,8 @@ urlpatterns = [
     path('api/auth/delete-account/', views.delete_account, name='delete_account'),
     path('api/summarize/', views.summarize_document, name='summarize_document'),
     path('api/summarize/stream/', views.summarize_document_stream, name='summarize_document_stream'),
+    path('api/uploads/preflight/', views.preflight_upload, name='preflight_upload'),
+    path('api/uploads/<int:upload_id>/summarize/', views.summarize_upload, name='summarize_upload'),
 
     path('api/uploads/', views.list_uploads, name='list_uploads'),
     path('api/uploads/<int:upload_id>/', views.get_upload, name='get_upload'),
