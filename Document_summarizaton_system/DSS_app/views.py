@@ -21,6 +21,7 @@ import re
 import secrets
 import urllib.parse
 import hashlib
+import importlib
 
 from .models import StoredDocument, UserCredits, RazorpayTopupOrder
 
@@ -58,6 +59,23 @@ try:
     import razorpay
 except Exception:  # pragma: no cover
     razorpay = None
+
+
+def _get_razorpay_sdk_module():
+    """Return the razorpay module, retrying import if needed.
+
+    This helps when dependencies are installed after the Django process starts
+    or when the first import failed due to a transient environment issue.
+    """
+    global razorpay
+    if razorpay is not None:
+        return razorpay
+    try:
+        razorpay = importlib.import_module("razorpay")
+        return razorpay
+    except Exception:
+        logger.exception("Failed to import razorpay SDK at runtime")
+        return None
 
 
 @csrf_exempt
@@ -365,10 +383,11 @@ def _get_razorpay_client_with_error():
 
     if not key_id or not key_secret:
         return None, "missing_keys"
-    if razorpay is None:
+    razorpay_sdk = _get_razorpay_sdk_module()
+    if razorpay_sdk is None:
         return None, "sdk_missing"
     try:
-        return razorpay.Client(auth=(key_id, key_secret)), None
+        return razorpay_sdk.Client(auth=(key_id, key_secret)), None
     except Exception:
         logger.exception("Failed to initialize Razorpay client")
         return None, "init_failed"
@@ -1385,15 +1404,24 @@ def extract_text_from_pdf_bytes(pdf_bytes: bytes, *, ocr_if_needed: bool = True)
             # Helpful diagnostics: poppler + tesseract availability.
             poppler_hint = shutil.which("pdftoppm") or shutil.which("pdfinfo")
             tesseract_cmd = shutil.which("tesseract")
+            ocr_max_pages = int(os.environ.get("DSS_OCR_MAX_PAGES", "12"))
+            ocr_dpi = int(os.environ.get("DSS_OCR_DPI", "220"))
             logger.info(
-                "OCR fallback starting (poppler=%s, tesseract=%s, TESSERACT_CMD=%s)",
+                "OCR fallback starting (poppler=%s, tesseract=%s, TESSERACT_CMD=%s, max_pages=%s, dpi=%s)",
                 poppler_hint,
                 tesseract_cmd,
                 getattr(pytesseract.pytesseract, "tesseract_cmd", None),
+                ocr_max_pages,
+                ocr_dpi,
             )
 
             # Use a moderate DPI for accuracy; higher DPI = slower/more memory.
-            images = convert_from_bytes(pdf_bytes, dpi=250)
+            images = convert_from_bytes(
+                pdf_bytes,
+                dpi=max(120, min(400, ocr_dpi)),
+                first_page=1,
+                last_page=max(1, ocr_max_pages),
+            )
             logger.info("OCR fallback rendered %s page image(s)", len(images))
             ocr_parts: list[str] = []
             for img in images:

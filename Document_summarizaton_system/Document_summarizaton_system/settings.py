@@ -57,16 +57,17 @@ ALLOWED_HOSTS = ["localhost", "127.0.0.1"]
 
 
 # --- Dev session/CORS friendliness ---
-# We use Django's session cookie from a different origin (Vite dev server).
-# For cross-origin XHR/fetch with credentials, cookies must be SameSite=None.
-# In production, you should revisit these settings and use HTTPS.
-SESSION_COOKIE_SAMESITE = "None"
+# Local dev uses different origins (frontend 5173, backend 8000) but can still
+# be same-site when hostnames match (localhost↔localhost or 127.0.0.1↔127.0.0.1).
+# Browsers reject SameSite=None cookies unless Secure=True (HTTPS).
+# So for local HTTP development, prefer Lax so session cookies are accepted.
+SESSION_COOKIE_SAMESITE = "Lax"
 SESSION_COOKIE_SECURE = False
 SESSION_COOKIE_HTTPONLY = True
 
 # We do not use CSRF cookies for our JSON auth endpoints (they're csrf_exempt),
 # but keep this aligned for any future non-exempt endpoints.
-CSRF_COOKIE_SAMESITE = "None"
+CSRF_COOKIE_SAMESITE = "Lax"
 CSRF_COOKIE_SECURE = False
 
 # Allow CSRF Origin checks for the Vite dev server.

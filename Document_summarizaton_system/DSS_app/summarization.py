@@ -56,13 +56,19 @@ def _default_num_threads() -> int:
 
 _MAX_CONCURRENCY = int(os.environ.get("DSS_OLLAMA_MAX_CONCURRENCY", "1"))
 _OLLAMA_SEM = threading.Semaphore(max(1, _MAX_CONCURRENCY))
+_SLOT_WAIT_TIMEOUT = float(os.environ.get("DSS_OLLAMA_SLOT_WAIT_TIMEOUT", "20"))
+_REQUEST_TIMEOUT = float(os.environ.get("DSS_OLLAMA_REQUEST_TIMEOUT", "90"))
 
 
 @contextmanager
 def _ollama_slot():
     """Limit concurrent Ollama generations to avoid system thrash."""
 
-    _OLLAMA_SEM.acquire()
+    acquired = _OLLAMA_SEM.acquire(timeout=max(1.0, _SLOT_WAIT_TIMEOUT))
+    if not acquired:
+        raise RuntimeError(
+            "Summarization server is busy. Please retry in a few seconds."
+        )
     try:
         yield
     finally:
@@ -444,7 +450,8 @@ def summarize_text(
 
     try:
         with _ollama_slot():
-            resp = ollama.chat(
+            client = ollama.Client(host=DEFAULT_OLLAMA_HOST, timeout=max(5.0, _REQUEST_TIMEOUT))
+            resp = client.chat(
                 model=model_name,
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -524,7 +531,8 @@ def stream_summary(
 
         with _ollama_slot():
             # stream=True makes the client yield incremental chunks.
-            for part in ollama.chat(
+            client = ollama.Client(host=DEFAULT_OLLAMA_HOST, timeout=max(5.0, _REQUEST_TIMEOUT))
+            for part in client.chat(
                 model=model_name,
                 messages=[
                     {"role": "system", "content": system_prompt},
