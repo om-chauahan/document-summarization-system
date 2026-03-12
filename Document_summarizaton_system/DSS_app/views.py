@@ -1918,6 +1918,322 @@ def summarize_document(request):
 
 @csrf_exempt
 @require_http_methods(["POST", "OPTIONS"])
+def preflight_upload(request):
+    """Upload + extract text and return estimated credit cost.
+
+    This endpoint is meant to be called BEFORE generating a summary, so the UI can
+    display the approximate credits required. Credits are computed from extracted
+    text bytes (UTF-8) — not original file size.
+
+    It persists a StoredDocument with extracted_text but an empty summary, and
+    returns its upload_id. The client can then call summarize_upload(upload_id).
+    """
+
+    if request.method == "OPTIONS":
+        response = JsonResponse({})
+        return add_cors_headers(response, request)
+
+    user = getattr(request, "user", None)
+    if not user or not getattr(user, "is_authenticated", False):
+        response = JsonResponse({"ok": False, "error": "Not authenticated."}, status=401)
+        return add_cors_headers(response, request)
+
+    if "file" not in request.FILES:
+        response = JsonResponse({"ok": False, "error": "No file provided"}, status=400)
+        return add_cors_headers(response, request)
+
+    uploaded_file = request.FILES["file"]
+    if not uploaded_file.name:
+        response = JsonResponse({"ok": False, "error": "File has no name"}, status=400)
+        return add_cors_headers(response, request)
+
+    file_size = getattr(uploaded_file, "size", 0)
+    if file_size > 50 * 1024 * 1024:
+        response = JsonResponse({"ok": False, "error": "File size exceeds 50MB limit"}, status=400)
+        return add_cors_headers(response, request)
+
+    raw_bytes = uploaded_file.read()
+    if not isinstance(file_size, int) or file_size == 0:
+        file_size = len(raw_bytes)
+
+    file_like = io.BytesIO(raw_bytes)
+    file_like.name = uploaded_file.name
+    extracted_text, detected_type = extract_text_from_uploaded_file(file_like)
+
+    if detected_type == "unsupported":
+        response = JsonResponse(
+            {
+                "ok": False,
+                "error": "Unsupported file type. Supported: PDF, TXT, DOCX, PNG/JPG (OCR).",
+            },
+            status=400,
+        )
+        return add_cors_headers(response, request)
+
+    # Normalize extracted text where possible.
+    try:
+        extracted_text = normalize_extracted_text(extracted_text)
+    except Exception:
+        logger.exception("Failed to normalize extracted text")
+
+    # For images, we might later fall back to image description.
+    # In that case, we can't reliably estimate credits without running the
+    # captioning model, so we return a hint.
+    if detected_type == "image" and _looks_like_garbage_ocr(extracted_text):
+        extracted_text = ""
+
+    if not extracted_text.strip():
+        if detected_type == "image":
+            # Let the UI know this will be treated as image-description.
+            credits_obj = _get_or_create_user_credits(user)
+            stored = StoredDocument.objects.create(
+                user=user,
+                original_name=uploaded_file.name,
+                content_type=getattr(uploaded_file, "content_type", "") or "",
+                size_bytes=file_size,
+                detected_type=detected_type,
+                file_bytes=raw_bytes,
+                extracted_text="",
+                summary="",
+            )
+            response = JsonResponse(
+                {
+                    "ok": True,
+                    "upload_id": stored.id,
+                    "detected_type": detected_type,
+                    "result_kind": "image_description",
+                    "extracted_text_length": 0,
+                    "extracted_text_bytes": 0,
+                    "required_credits": None,
+                    "credits": credits_obj.credits,
+                    "message": "No usable OCR text found. Credits will be calculated after generating the image description.",
+                },
+                status=200,
+            )
+            return add_cors_headers(response, request)
+
+        if detected_type == "docx" and DocxDocument is None:
+            msg = "DOCX support is not available on the server. Please install python-docx."
+        elif detected_type == "image" and pytesseract is None:
+            msg = "Image OCR is not available on the server. Please install pytesseract and ensure Tesseract is installed."
+        else:
+            msg = "No text could be extracted from the file."
+        response = JsonResponse({"ok": False, "error": msg}, status=400)
+        return add_cors_headers(response, request)
+
+    extracted_text_bytes = len(extracted_text.encode("utf-8"))
+    required_credits = _calculate_credits_from_bytes(extracted_text_bytes)
+    credits_obj = _get_or_create_user_credits(user)
+
+    stored = StoredDocument.objects.create(
+        user=user,
+        original_name=uploaded_file.name,
+        content_type=getattr(uploaded_file, "content_type", "") or "",
+        size_bytes=file_size,
+        detected_type=detected_type,
+        file_bytes=raw_bytes,
+        extracted_text=extracted_text,
+        summary="",
+    )
+
+    response = JsonResponse(
+        {
+            "ok": True,
+            "upload_id": stored.id,
+            "detected_type": detected_type,
+            "result_kind": "preflight",
+            "extracted_text_length": len(extracted_text),
+            "extracted_text_bytes": extracted_text_bytes,
+            "required_credits": required_credits,
+            "credits": credits_obj.credits,
+        },
+        status=200,
+    )
+    return add_cors_headers(response, request)
+
+
+@csrf_exempt
+@require_http_methods(["POST", "OPTIONS"])
+def summarize_upload(request, upload_id: int):
+    """Generate a summary for a previously preflighted upload_id."""
+
+    if request.method == "OPTIONS":
+        response = JsonResponse({})
+        return add_cors_headers(response, request)
+
+    user = getattr(request, "user", None)
+    if not user or not getattr(user, "is_authenticated", False):
+        response = JsonResponse({"ok": False, "error": "Not authenticated."}, status=401)
+        return add_cors_headers(response, request)
+
+    try:
+        doc = StoredDocument.objects.get(id=upload_id, user=user)
+    except StoredDocument.DoesNotExist:
+        response = JsonResponse({"ok": False, "error": "Not found."}, status=404)
+        return add_cors_headers(response, request)
+
+    if doc.summary:
+        credits_obj = _get_or_create_user_credits(user)
+        response = JsonResponse(
+            {
+                "success": True,
+                "upload_id": doc.id,
+                "extracted_text": doc.extracted_text or "",
+                "summary": doc.summary,
+                "credits_used": 0,
+                "credits_remaining": credits_obj.credits,
+                "credits": credits_obj.credits,
+                "summarization_used": True,
+                "extracted_text_length": len(doc.extracted_text or ""),
+                "detected_type": doc.detected_type,
+                "message": "Summary already exists for this upload.",
+            },
+            status=200,
+        )
+        return add_cors_headers(response, request)
+
+    if doc.detected_type == "image" and not (doc.extracted_text or "").strip():
+        # For preflighted images without usable OCR, attempt image description.
+        try:
+            from .image_captioning import describe_image_bytes
+
+            image_description = describe_image_bytes(doc.file_bytes)
+            if not (image_description or "").strip():
+                raise ValueError("Empty image description")
+
+            summary_bytes = len(image_description.encode("utf-8"))
+            required_credits = _calculate_credits_from_bytes(summary_bytes)
+            ok, remaining = _consume_credits(user, required_credits)
+            credits_obj = _get_or_create_user_credits(user)
+            if not ok:
+                response = JsonResponse(
+                    {
+                        "success": True,
+                        "upload_id": doc.id,
+                        "extracted_text": "",
+                        "summary": image_description,
+                        "summary_bytes": summary_bytes,
+                        "credits_used": 0,
+                        "credits_remaining": remaining,
+                        "credits": remaining,
+                        "summarization_used": False,
+                        "result_kind": "image_description",
+                        "detected_type": doc.detected_type,
+                        "error": f"Image description generated but insufficient credits. This requires {required_credits} credits, but you only have {remaining} credits.",
+                        "required_credits": required_credits,
+                    },
+                    status=200,
+                )
+                return add_cors_headers(response, request)
+
+            doc.summary = image_description
+            doc.save(update_fields=["summary"])
+            response = JsonResponse(
+                {
+                    "success": True,
+                    "upload_id": doc.id,
+                    "extracted_text": "",
+                    "summary": image_description,
+                    "summary_bytes": summary_bytes,
+                    "credits_used": required_credits,
+                    "credits_remaining": credits_obj.credits,
+                    "credits": credits_obj.credits,
+                    "summarization_used": False,
+                    "result_kind": "image_description",
+                    "detected_type": doc.detected_type,
+                    "message": f"Image described successfully. {required_credits} credits used.",
+                },
+                status=200,
+            )
+            return add_cors_headers(response, request)
+        except ImportError:
+            response = JsonResponse(
+                {
+                    "ok": False,
+                    "error": "Image description is not available on the server.",
+                },
+                status=503,
+            )
+            return add_cors_headers(response, request)
+        except Exception as e:
+            response = JsonResponse({"ok": False, "error": f"Image description failed: {str(e)}"}, status=500)
+            return add_cors_headers(response, request)
+
+    extracted_text = doc.extracted_text or ""
+    if not extracted_text.strip():
+        response = JsonResponse({"ok": False, "error": "No extracted text available for this upload."}, status=400)
+        return add_cors_headers(response, request)
+
+    if model_summarize_text is None:
+        response = JsonResponse(
+            {
+                "ok": False,
+                "error": "Summarization is not available on the server. Please install the ollama python package and ensure Ollama is running.",
+            },
+            status=503,
+        )
+        return add_cors_headers(response, request)
+
+    try:
+        summary = model_summarize_text(extracted_text)
+    except Exception as e:
+        response = JsonResponse({"ok": False, "error": f"Summarization failed: {str(e)}"}, status=500)
+        return add_cors_headers(response, request)
+
+    extracted_text_bytes = len(extracted_text.encode("utf-8"))
+    summary_bytes = len(summary.encode("utf-8"))
+    required_credits = _calculate_credits_from_bytes(extracted_text_bytes)
+
+    ok, remaining = _consume_credits(user, required_credits)
+    if not ok:
+        response = JsonResponse(
+            {
+                "success": True,
+                "upload_id": doc.id,
+                "extracted_text": extracted_text,
+                "summary": summary,
+                "summary_bytes": summary_bytes,
+                "extracted_text_bytes": extracted_text_bytes,
+                "credits_used": 0,
+                "credits_remaining": remaining,
+                "credits": remaining,
+                "summarization_used": True,
+                "extracted_text_length": len(extracted_text),
+                "detected_type": doc.detected_type,
+                "error": f"Summary generated but insufficient credits. This summary requires {required_credits} credits, but you only have {remaining} credits. Please buy more credits to save this summary.",
+                "required_credits": required_credits,
+            },
+            status=200,
+        )
+        return add_cors_headers(response, request)
+
+    doc.summary = summary
+    doc.save(update_fields=["summary"])
+    credits_obj = _get_or_create_user_credits(user)
+    response = JsonResponse(
+        {
+            "success": True,
+            "upload_id": doc.id,
+            "extracted_text": extracted_text,
+            "summary": summary,
+            "file_size_bytes": doc.size_bytes,
+            "summary_bytes": summary_bytes,
+            "extracted_text_bytes": extracted_text_bytes,
+            "credits_used": required_credits,
+            "credits_remaining": credits_obj.credits,
+            "credits": credits_obj.credits,
+            "summarization_used": True,
+            "extracted_text_length": len(extracted_text),
+            "detected_type": doc.detected_type,
+            "message": f"Document summarized successfully. Summary: {summary_bytes} bytes, {required_credits} credits used.",
+        },
+        status=200,
+    )
+    return add_cors_headers(response, request)
+
+
+@csrf_exempt
+@require_http_methods(["POST", "OPTIONS"])
 def summarize_document_stream(request):
     """Streaming API endpoint (SSE) to reduce perceived lag.
 
@@ -2095,7 +2411,8 @@ def list_uploads(request):
         response = JsonResponse({"ok": False, "error": "Not authenticated."}, status=401)
         return add_cors_headers(response, request)
 
-    qs = StoredDocument.objects.filter(user=user).order_by("-created_at")
+    # Only show finalized uploads (those with a generated summary/image description).
+    qs = StoredDocument.objects.filter(user=user).exclude(summary="").order_by("-created_at")
     uploads = [
         {
             "id": u.id,

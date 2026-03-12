@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from django.test import TestCase
+from django.contrib.auth import get_user_model
+from .models import StoredDocument
 from django.core.files.uploadedfile import SimpleUploadedFile
 from unittest.mock import patch
 from django.test.utils import override_settings
@@ -84,6 +86,47 @@ class AuthApiTests(TestCase):
 		)
 		self.assertEqual(res.status_code, 201)
 		self.assertEqual(res.json().get("ok"), True)
+
+
+class UploadPreflightTests(TestCase):
+	def setUp(self):
+		User = get_user_model()
+		self.user = User.objects.create_user(username="u1", password="password123")
+		self.client.login(username="u1", password="password123")
+
+	def test_preflight_estimates_credits_from_extracted_text_bytes(self):
+		# 1 KB-ish extracted text should map to the first tier (3 credits) using the shared backend function.
+		content = ("Hello world.\n" * 50).encode("utf-8")
+		up = SimpleUploadedFile("a.txt", content, content_type="text/plain")
+		res = self.client.post("/api/uploads/preflight/", {"file": up})
+		self.assertEqual(res.status_code, 200)
+		data = res.json()
+		self.assertEqual(data.get("ok"), True)
+		self.assertIsInstance(data.get("upload_id"), int)
+		self.assertIsInstance(data.get("extracted_text_bytes"), int)
+		self.assertIsInstance(data.get("extracted_text_length"), int)
+		self.assertIn(data.get("required_credits"), (3, 5, 8, 12, 18, 25, 40, 60))
+
+		# Preflight creates a StoredDocument but should not set summary yet.
+		doc = StoredDocument.objects.get(id=data.get("upload_id"))
+		self.assertEqual(doc.user_id, self.user.id)
+		self.assertEqual(doc.original_name, "a.txt")
+		self.assertTrue((doc.extracted_text or "").strip())
+		self.assertEqual(doc.summary, "")
+
+	def test_list_uploads_excludes_preflight_items(self):
+		# Create a preflight item (summary empty)
+		up = SimpleUploadedFile("b.txt", b"Hello", content_type="text/plain")
+		res = self.client.post("/api/uploads/preflight/", {"file": up})
+		self.assertEqual(res.status_code, 200)
+
+		# list_uploads should exclude it
+		res2 = self.client.get("/api/uploads/")
+		self.assertEqual(res2.status_code, 200)
+		data2 = res2.json()
+		self.assertEqual(data2.get("ok"), True)
+		uploads = data2.get("uploads") or []
+		self.assertEqual(len(uploads), 0)
 
 	def test_login_rejects_invalid_credentials(self):
 		# No user created

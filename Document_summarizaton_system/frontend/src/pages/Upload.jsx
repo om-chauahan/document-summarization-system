@@ -68,7 +68,12 @@ export default function Upload() {
   const typingTimerRef = useRef(null);
   const loadingTimerRef = useRef(null);
   const typingStartTimeoutRef = useRef(null);
+  const preflightSeqRef = useRef(0);
   const [file, setFile] = useState(null);
+  const [uploadId, setUploadId] = useState(null);
+  const [estimatedCredits, setEstimatedCredits] = useState(null);
+  const [estimatedExtractedBytes, setEstimatedExtractedBytes] = useState(null);
+  const [preflightDetectedType, setPreflightDetectedType] = useState(null);
   const [credits, setCredits] = useState(() => {
     const u = getStoredUser();
     return typeof u?.credits === "number" ? u.credits : null;
@@ -85,6 +90,13 @@ export default function Upload() {
   const [error, setError] = useState("");
   const [copiedSummary, setCopiedSummary] = useState(false);
   const [copiedExtracted, setCopiedExtracted] = useState(false);
+
+  const showEstimate = !!file && !summary && !extractedText;
+  const insufficientCredits =
+    showEstimate &&
+    typeof credits === "number" &&
+    typeof estimatedCredits === "number" &&
+    estimatedCredits > credits;
 
   // Refresh credits from backend session (if logged in).
   useEffect(() => {
@@ -268,7 +280,7 @@ export default function Upload() {
 
   async function handleSummarize(e) {
     e.preventDefault();
-    if (!file) return;
+    if (!file || !uploadId) return;
 
     setStatus("loading");
     setError("");
@@ -291,22 +303,21 @@ export default function Upload() {
     }
 
     try {
-      const formData = new FormData();
-      formData.append("file", file);
-
       const controller = new AbortController();
       const timeoutMs = 120000;
       const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
-      // Django endpoint (non-streaming)
+      // Summarize from the stored upload_id (preflight).
       let res;
       try {
-        res = await fetch(`${API_BASE}/api/summarize/`, {
-          method: "POST",
-          credentials: "include",
-          body: formData,
-          signal: controller.signal,
-        });
+        res = await fetch(
+          `${API_BASE}/api/uploads/${uploadId}/summarize/`,
+          {
+            method: "POST",
+            credentials: "include",
+            signal: controller.signal,
+          },
+        );
       } finally {
         clearTimeout(timeoutId);
       }
@@ -363,6 +374,11 @@ export default function Upload() {
       setCopiedSummary(false);
       setCopiedExtracted(false);
 
+      // Hide estimated credits after summary generation.
+      setEstimatedCredits(null);
+      setEstimatedExtractedBytes(null);
+      setPreflightDetectedType(null);
+
       const resultKind = data?.result_kind || "";
       setSummaryTitle(
         resultKind === "image_description" ? "Image Description" : "AI Summary",
@@ -401,6 +417,66 @@ export default function Upload() {
     }
   }
 
+  async function runPreflight(nextFile) {
+    if (!nextFile) return;
+    const seq = (preflightSeqRef.current += 1);
+
+    setStatus("loading");
+    setError("");
+    setSummary("");
+    setDisplaySummary("");
+    setExtractedText("");
+    setExtractedTextLength(null);
+    setUploadId(null);
+    setEstimatedCredits(null);
+    setEstimatedExtractedBytes(null);
+    setPreflightDetectedType(null);
+
+    try {
+      const formData = new FormData();
+      formData.append("file", nextFile);
+      const res = await fetch(`${API_BASE}/api/uploads/preflight/`, {
+        method: "POST",
+        credentials: "include",
+        body: formData,
+      });
+
+      const data = await res.json();
+      if (seq !== preflightSeqRef.current) return;
+      if (!res.ok) throw new Error(data?.error || "Failed to analyze document");
+      if (!data?.ok)
+        throw new Error(data?.error || "Failed to analyze document");
+
+      setUploadId(typeof data?.upload_id === "number" ? data.upload_id : null);
+      setEstimatedCredits(
+        typeof data?.required_credits === "number"
+          ? data.required_credits
+          : null,
+      );
+      setEstimatedExtractedBytes(
+        typeof data?.extracted_text_bytes === "number"
+          ? data.extracted_text_bytes
+          : null,
+      );
+      setPreflightDetectedType(
+        typeof data?.detected_type === "string" ? data.detected_type : null,
+      );
+
+      // Backend includes credits as convenience.
+      if (typeof data?.credits === "number") {
+        setCredits(data.credits);
+        const existing = getStoredUser();
+        if (existing) storeUser({ ...existing, credits: data.credits });
+      }
+
+      setStatus("done");
+    } catch (err) {
+      if (seq !== preflightSeqRef.current) return;
+      setError(err.message || "Something went wrong");
+      setStatus("error");
+    }
+  }
+
   return (
     <div className="page">
       <SiteHeader />
@@ -422,7 +498,11 @@ export default function Upload() {
                 <input
                   type="file"
                   accept=".pdf,.txt,.docx,.png,.jpg,.jpeg"
-                  onChange={(e) => setFile(e.target.files?.[0] || null)}
+                  onChange={(e) => {
+                    const nextFile = e.target.files?.[0] || null;
+                    setFile(nextFile);
+                    if (nextFile) runPreflight(nextFile);
+                  }}
                   className="fileInput"
                   disabled={status === "loading"}
                 />
@@ -448,22 +528,84 @@ export default function Upload() {
               </label>
 
               {status !== "loading" && (
-                <button className="btnSubmit" type="submit" disabled={!file}>
+                <button
+                  className="btnSubmit"
+                  type="submit"
+                  disabled={!file || !uploadId || insufficientCredits}
+                >
                   Generate Summary
                 </button>
               )}
 
-              {status !== "loading" && (
-                <div className="uploadMetaRow" aria-label="Usage details">
-                  <div className="uploadMetaItem">
-                    Credits: {typeof credits === "number" ? credits : "—"}
+              {status !== "loading" && insufficientCredits ? (
+                <div className="uploadCreditGate" role="note">
+                  <div className="uploadCreditGateText">
+                    Estimated cost is higher than your available credits. Top up
+                    to generate the summary.
                   </div>
+                  <div className="uploadCreditGateActions">
+                    <button
+                      type="button"
+                      className="btnOutline"
+                      onClick={() => navigate("/billing")}
+                    >
+                      Buy credits
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+
+              {status !== "loading" && (
+                <div className="uploadMetaCards" aria-label="Usage details">
+                  <div className="uploadMetaCard">
+                    <div className="uploadMetaLabel">Available credits</div>
+                    <div className="uploadMetaValue">
+                      {typeof credits === "number" ? credits : "—"}
+                    </div>
+                    <div className="uploadMetaSub">Your current balance</div>
+                  </div>
+
+                  {showEstimate ? (
+                    <div className="uploadMetaCard">
+                      <div className="uploadMetaLabel">Estimated cost</div>
+                      <div className="uploadMetaValue">
+                        {typeof estimatedCredits === "number"
+                          ? estimatedCredits
+                          : "Estimating…"}
+                      </div>
+                      <div className="uploadMetaSub">
+                        Based on extracted text
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {showEstimate &&
+                  typeof estimatedExtractedBytes === "number" ? (
+                    <div className="uploadMetaCard">
+                      <div className="uploadMetaLabel">Extracted size</div>
+                      <div className="uploadMetaValue">
+                        {estimatedExtractedBytes.toLocaleString()}
+                      </div>
+                      <div className="uploadMetaSub">
+                        bytes
+                        {preflightDetectedType
+                          ? ` • ${preflightDetectedType}`
+                          : ""}
+                      </div>
+                    </div>
+                  ) : null}
+
                   {status === "done" && extractedText ? (
-                    <div className="uploadMetaItem">
-                      Extracted: {extractedTextLength ?? extractedText.length}{" "}
-                      chars
-                      {" • "}
-                      {extractedBytes.toLocaleString()} bytes
+                    <div className="uploadMetaCard">
+                      <div className="uploadMetaLabel">Extracted text</div>
+                      <div className="uploadMetaValue">
+                        {(
+                          extractedTextLength ?? extractedText.length
+                        ).toLocaleString()}
+                      </div>
+                      <div className="uploadMetaSub">
+                        chars • {extractedBytes.toLocaleString()} bytes
+                      </div>
                     </div>
                   ) : null}
                 </div>
