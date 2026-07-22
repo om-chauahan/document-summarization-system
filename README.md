@@ -1,77 +1,129 @@
-# 2025-26_Sdp3_Document-summarization-system
-# in ls output where manage.py available from there use git command to push
+# 📄 Synopsis – AI-Powered Document Summarization System
 
-📌 Project Overview
-The Document Summarization System is a Django-based web application that allows users to upload documents (PDF / DOCX) and automatically generate concise summaries using Natural Language Processing (NLP) techniques.
-The system is designed with a clear separation of concerns:
-Frontend for file upload and result display
-Backend for text extraction, processing, and summarization
-Machine Learning model for generating summaries (local, no external API)
+An intelligent web application that generates concise summaries from documents using a **locally hosted Large Language Model (LLM)**. The system supports multiple document formats, OCR for scanned files, secure authentication, and a credit-based usage model.
 
-✅ Frontend (Django Templates)
-Basic frontend UI created using Django templates
-File upload form implemented
-Summary output section added
-Frontend communicates with backend using JavaScript (fetch API)
-📁 Location:
-DSS_app/templates/DSS_app/
+---
 
-✅ Backend (Django Views)
-Django views configured to handle:
-File upload requests
-API endpoint for summarization
-URL routing set up between frontend and backend
-📁 Location:
-DSS_app/views.py
-DSS_app/urls.py
+## ✨ Features
 
-✅ Text Extraction Setup
-PyPDF2 – extract text from text-based PDFs
-python-docx – extract text from DOCX files
-pytesseract + Tesseract OCR – extract text from scanned PDFs / images
-pdf2image & Pillow – convert PDF pages to images for OCR
+- 📄 Supports PDF, DOCX, TXT, PNG, JPG and JPEG files
+- 🤖 AI-powered document summarization using Ollama
+- 🔍 OCR support for scanned documents using Tesseract OCR
+- 🔐 Secure user authentication and authorization
+- 📁 Document upload history
+- 💳 Credit-based usage system
+- 💰 Razorpay payment integration
+- 👤 User profile management
+- 🔒 Password management
+- ⚡ Fast document processing
+- 📊 Clean and structured summaries
 
-✅ Machine Learning Model
-Selected summarization model:
-facebook/bart-large-cnn
-Understanding of:
-Text cleaning
-Token-based chunking
-Hierarchical summarization
+## 🛠 Tech Stack
 
-🧠 System Architecture (Current Design)
+| Category | Technologies |
+|----------|--------------|
+| **Frontend** | React 19, JavaScript, Vite, CSS, React Router |
+| **Backend** | Django, Python |
+| **AI / NLP** | Ollama, Mistral LLM, Tesseract OCR |
+| **Document Processing** | pdfplumber, PyPDF2, pdf2image, Pillow, python-docx |
+| **Database** | SQLite |
+| **Payment Gateway** | Razorpay |
+| **Tools** | Git, GitHub, VS Code |
 
-User Uploads File
+## 📂 Project Structure
 
-        User Uploads File
+```text
+document-summarization-system/
+│
+├── Document_summarization_system/
+│   ├── frontend/                  # React Frontend
+│   ├── DSS_app/                   # Django Application
+│   ├── Document_summarization_system/ # Django Project Configuration
+│   ├── docs/                      # Project Documentation
+│   ├── manage.py
+│   ├── requirements.txt
+│   ├── README.md
+│   └── .env.example
+│
+├── .gitignore
+└── README.md
+```
 
+## 🔄 Project Workflow
 
-Django Frontend (HTML + JavaScript)
+```text
+                     +----------------+
+                     |     User       |
+                     +-------+--------+
+                             |
+                             ▼
+                 +----------------------+
+                 | Upload Document      |
+                 +----------+-----------+
+                            |
+                            ▼
+                 +----------------------+
+                 | Detect File Type     |
+                 +----------+-----------+
+                            |
+              +-------------+-------------+
+              |                           |
+              ▼                           ▼
+     Digital Document            Scanned Document
+              |                           |
+              ▼                           ▼
+      Extract Text                 OCR (Tesseract)
+              \___________________________/
+                          |
+                          ▼
+               Clean & Process Text
+                          |
+                          ▼
+                 Ollama (Mistral LLM)
+                          |
+                          ▼
+                 Generate Summary
+                          |
+                          ▼
+              Store Summary (SQLite)
+                          |
+                          ▼
+               Display to the User
+```
 
-        Django Frontend (HTML + JavaScript)
+## 🌟 Project Highlights
 
+- 🧠 Uses a **local Mistral LLM** through Ollama for AI-powered summarization.
+- 📄 Supports both **digital and scanned documents**.
+- 🔍 Performs OCR using **Tesseract** for image-based PDFs.
+- 💳 Includes a **credit-based usage system** with Razorpay integration.
+- 🔐 Secure authentication and user profile management.
+- ⚡ Generates fast and structured summaries.
+- 📚 Maintains upload history for users.
+- 💻 Runs completely on a local environment without requiring cloud LLM APIs.
 
-Django Backend (views.py)
+## 🚀 Future Enhancements
 
-        Django Backend (views.py)
+- PostgreSQL support
+- Cloud deployment
+- Multi-language summarization
+- Export summaries to PDF and DOCX
+- AI-powered keyword extraction
+- Speech-to-text document summarization
+- Multiple LLM support (Llama, Gemma, DeepSeek)
+- Collaborative workspace
+- Admin analytics dashboard
 
-Text Extraction (PDF / DOCX / OCR)
+## 👨‍💻 Author
 
-        Text Extraction (PDF / DOCX / OCR)
+**Om Chauhan**
 
-Text Cleaning & Chunking
+B.Tech Computer Engineering
 
-        Text Cleaning & Chunking
+Dharmsinh Desai University
 
-Summarization Model (BART – local)
+GitHub: https://github.com/om-chauahan
 
-        Summarization Model (BART – local)
+## 📜 License
 
-Summary Displayed to User
-
-         Summary Displayed to User
-
-
-
-
-
+This project was developed for educational purposes as part of the System Design Practice course at Dharmsinh Desai University.
