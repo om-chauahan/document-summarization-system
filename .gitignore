@@ -15,3 +15,12 @@ __pycache__/
 # Local env files
 .env
 .env.*
+
+# Database
+db.sqlite3
+
+# VS Code
+.vscode/
+
+# Python cache
+*.pyc

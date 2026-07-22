@@ -22,8 +22,8 @@ function renderStructuredSummary(text) {
     const line = raw.trim();
     if (!line) continue;
 
-    const bullet = line.match(/^[-•\*]\s+(.*)$/);
-    const numbered = line.match(/^\d+[\.)]\s+(.*)$/);
+    const bullet = line.match(/^[-•*]\s+(.*)$/);
+    const numbered = line.match(/^\d+[.)]\s+(.*)$/);
 
     if (bullet || numbered) {
       if (!current) current = { title: "", items: [] };
